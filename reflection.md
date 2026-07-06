@@ -4,8 +4,43 @@
 
 **a. Initial design**
 
+Three core functions to provide are
+1. Walking pet involes taking pet on a walk in the park or dog friendly trail.
+2. Feeding pet at lunch, dinner, and snacks, Give it water to keep hydrated.
+3. Nap time for pet gives it time to relax and rest after walking.
+
 - Briefly describe your initial UML design.
+  Initial UML design will show the relationship between various classes. Classes will define attributes and methods relevant to a class.
+
 - What classes did you include, and what responsibilities did you assign to each?
+  Classes for this project are Owner, Pet, Task, and Scheduler.
+    Global variables are predefined constant values and list of objects.
+      ownerList
+        Methods: getOwnerByID and getOwnerByName.
+      petList
+        Methods: getPetByID and getPetByName.
+      taskList all scheduled tasks.
+        Methods: getTaskByID and getTaskByPetID.
+      services is a dictionary where key is integer taskCode and value is taskDescription.
+        Sample {0: "Walk Pet", 1: "Feed Pet", 2: "Nap Time", 3: "Veterinarian Visit"}
+      scheduleDictionary where key is date (YYYYMMDD) and value is list of scheduler object.
+        Methods: addTask, viewTodaysTask, and cancelTask.
+    Owner class is a pet owner.
+      Constructor: required string ownerName.
+      Attributes: unique integer ownerID, ownerName, and petList.
+      Methods: getOwnerID, getOwnerName, setPet, getPetByName and getPetList.
+    Pet class is a pet with it's owner and scheduled tasks.
+      Constructor: required string petName.
+      Attributes: owner object, unique integer petID, petName, and petTaskList (task for this pet).
+      Methods: getOwner, ggetPetID, getPetName, addPetTask, removePetTask, and getPetTaskList.
+    Task class defines the different services a pet can receive.
+      Constructor: required pet object and required taskCode.
+      Attributes: unique integer taskID, pet object, taskCode, duration, and completed.
+      Methods: getTaskID, getPet, getTaskCode, isTaskCompleted, setTaskDuration, getTaskDuration, and doTask.
+    Scheduler class reserves a date and time for a pet service.
+      Constructor: task object.
+      Attributes: unique integer schedulerID, task object, year, month, date, and time.
+      Methods: getSchedulerID, getYear, setYear, getMonth, setMonth, getDate, setDate, getTime, setTime, and getTask
 
 **b. Design changes**
 

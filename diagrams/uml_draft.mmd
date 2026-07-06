@@ -1,0 +1,66 @@
+classDiagram
+    class Owner {
+        -ownerID: int
+        -ownerName: string
+        -petList: List~Pet~
+        +Owner(ownerName: string)
+        +getOwnerID(): int
+        +getOwnerName(): string
+        +setPet(pet: Pet): void
+        +getPetByName(name: string): Pet
+        +getPetList(): List~Pet~
+    }
+    
+    class Pet {
+        -petID: int
+        -petName: string
+        -owner: Owner
+        -petTaskList: List~Task~
+        +Pet(petName: string)
+        +getOwner(): Owner
+        +getPetID(): int
+        +getPetName(): string
+        +addPetTask(task: Task): void
+        +removePetTask(task: Task): void
+        +getPetTaskList(): List~Task~
+    }
+    
+    class Task {
+        -taskID: int
+        -pet: Pet
+        -taskCode: int
+        -duration: int
+        -completed: bool
+        +Task(pet: Pet, taskCode: int)
+        +getTaskID(): int
+        +getPet(): Pet
+        +getTaskCode(): int
+        +isTaskCompleted(): bool
+        +setTaskDuration(duration: int): void
+        +getTaskDuration(): int
+        +doTask(): void
+    }
+    
+    class Scheduler {
+        -schedulerID: int
+        -task: Task
+        -year: int
+        -month: int
+        -date: int
+        -time: string
+        +Scheduler(task: Task)
+        +getSchedulerID(): int
+        +getYear(): int
+        +setYear(year: int): void
+        +getMonth(): int
+        +setMonth(month: int): void
+        +getDate(): int
+        +setDate(date: int): void
+        +getTime(): string
+        +setTime(time: string): void
+        +getTask(): Task
+    }
+    
+    Owner "1" --> "*" Pet : owns
+    Pet "1" --> "*" Task : has scheduled
+    Task "1" --> "1" Scheduler : scheduled by
