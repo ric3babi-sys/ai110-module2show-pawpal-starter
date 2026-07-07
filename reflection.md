@@ -45,6 +45,7 @@ Three core functions to provide are
 **b. Design changes**
 
 - Did your design change during implementation?
+  Claude Code identified 5 Missing Relationships and 6 Critical Bottlenecks.
 - If yes, describe at least one change and why you made it.
 
 ---
