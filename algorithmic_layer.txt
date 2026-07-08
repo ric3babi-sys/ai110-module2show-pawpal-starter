@@ -1,0 +1,370 @@
+===============================================================================
+PawPal+  —  Algorithmic Layer
+Scheduling efficiency improvements for the pet owner
+===============================================================================
+
+This document describes 8 small algorithms / logic improvements added to make
+the PawPal+ scheduling app more efficient and useful for a pet owner.
+
+All core logic lives in `pawpal_system.py` (pure functions/methods, no Streamlit
+dependency, so it is unit-testable). The owner-facing pieces are wired into
+`app.py`.
+
+Shared helpers added at module level in `pawpal_system.py`:
+  - timeToMinutes("HH:MM") -> int    Minutes since midnight (e.g. "09:30" -> 570)
+  - minutesToTime(int) -> "HH:MM"    Inverse of the above, clamped to one day
+  - DEFAULT_TASK_PRIORITY            {0: 1, 1: 2, 2: 0, 3: 3}  (Walk/Feed/Nap/Vet)
+
+Task-type reference: 0 = Walk, 1 = Feed, 2 = Nap, 3 = Veterinarian Visit.
+
+
+-------------------------------------------------------------------------------
+#1  DURATION-AWARE OVERLAP DETECTION
+-------------------------------------------------------------------------------
+Problem
+  The original Pet.findConflictingSchedules() only flagged schedules that shared
+  the *exact* same start time. It ignored task duration, so a 60-minute walk at
+  09:00 and a feed at 09:30 looked conflict-free.
+
+Change
+  pawpal_system.py — new methods on the Scheduler class:
+    - getStartMinutes()  -> start time in minutes since midnight
+    - getEndMinutes()    -> start + task duration
+    - getEndTime()       -> end time as "HH:MM"
+    - isSameDate(other)  -> True if same calendar day
+    - overlaps(other)    -> True if the two time intervals overlap on the same
+                            day. Uses the standard interval test:
+                            selfStart < otherEnd AND otherStart < selfEnd
+
+  pawpal_system.py — Pet.findConflictingSchedules() rewritten:
+    - Groups the pet's schedulers by calendar day.
+    - Sorts each day's group by start time.
+    - Scans each group once; because it is sorted, it stops comparing as soon as
+      a later task starts at/after the current task ends (early break).
+    - Returns a list of (Scheduler, Scheduler) tuples that actually overlap.
+
+Owner benefit
+  Real double-booking is detected (overlapping time ranges), not just identical
+  clock times. Surfaced in app.py as a warning after a task is scheduled.
+
+
+-------------------------------------------------------------------------------
+#2  GREEDY "PLAN MY DAY" BUILDER
+-------------------------------------------------------------------------------
+Problem
+  The assignment asks the system to "build a plan/schedule for a day that chooses
+  and orders tasks based on constraints" — nothing implemented it.
+
+Change
+  pawpal_system.py — new function:
+    buildDayPlan(tasks, day_start="08:00", day_end="20:00") -> dict
+      - Sorts tasks by priority (high first), then duration (short first).
+      - Packs them back-to-back starting at day_start using a moving cursor.
+      - Anything that no longer fits before day_end is returned as "unplaced".
+      - Returns:
+          {
+            'planned':  [{'task','start','end','start_minutes','duration'}, ...],
+            'unplaced': [Task, ...],
+            'day_start', 'day_end',
+            'total_minutes': minutes of care actually scheduled
+          }
+
+  pawpal_system.py — Owner.planDay(day_start, day_end) convenience method that
+  runs buildDayPlan() over the owner's pending tasks across all pets.
+
+Owner benefit
+  Turns the app from a manual logger into an actual planner: given the day's
+  to-do tasks, it proposes a sensible order and time for each. Exposed in app.py
+  as the "Plan <owner>'s day" expander.
+
+
+-------------------------------------------------------------------------------
+#3  TASK PRIORITY
+-------------------------------------------------------------------------------
+Problem
+  Tasks had no priority, so a Vet visit and a Nap were treated as equally
+  important when ordering or planning.
+
+Change
+  pawpal_system.py — Task dataclass:
+    - New field `priority: int` (0-3, higher = more urgent).
+    - Sentinel default of -1 means "derive from task type" via
+      DEFAULT_TASK_PRIORITY (Vet=3, Feed=2, Walk=1, Nap=0).
+    - __post_init__ resolves the sentinel and validates any explicit value (0-3).
+    - New methods getPriority() and setPriority() (setPriority validates range).
+
+  app.py:
+    - Priority selectbox in the task-creation form (defaults to the task type's
+      default, owner can override). Labels: 0=Low, 1=Normal, 2=High, 3=Urgent.
+    - Priority column added to the pet's task list display.
+
+Owner benefit
+  The most important care (e.g. Vet visits) is scheduled/ordered first by the
+  day planner (#2).
+
+
+-------------------------------------------------------------------------------
+#4  FREE-SLOT FINDER
+-------------------------------------------------------------------------------
+Problem
+  When creating a task the time defaulted to 00:00 and gave no guidance about
+  when the pet was actually free.
+
+Change
+  pawpal_system.py — new functions:
+    getFreeSlots(schedulers, day_start="08:00", day_end="20:00") -> [(start,end)]
+      - Merges the busy intervals of the given schedulers and returns the open
+        gaps within [day_start, day_end] as ("HH:MM","HH:MM") tuples.
+    findFreeSlot(schedulers, duration, day_start="08:00", day_end="20:00")
+      - Returns the earliest start time ("HH:MM") whose gap is >= duration, or
+        None if nothing fits.
+
+  app.py:
+    - Under the date/time inputs, shows a live hint: the earliest free slot on
+      the chosen date for the chosen duration (or a warning if none fits).
+
+Owner benefit
+  The app suggests when to schedule instead of forcing the owner to hunt for a
+  gap manually.
+
+
+-------------------------------------------------------------------------------
+#5  NUMERIC TIME SORTING
+-------------------------------------------------------------------------------
+Problem
+  Today's Schedule sorted by the raw "HH:MM" string. This only worked because
+  times happened to be zero-padded; one malformed/unpadded value would break the
+  ordering.
+
+Change
+  app.py — Today's Schedule now sorts with:
+    sorted(today_schedule, key=lambda s: timeToMinutes(s.getTime()))
+  giving a robust numeric sort.
+
+Owner benefit
+  The daily timeline is always shown in correct chronological order.
+
+
+-------------------------------------------------------------------------------
+#6  O(1) ID / NAME LOOKUP INDEXES
+-------------------------------------------------------------------------------
+Problem
+  getOwnerByID / getPetByID / getOwnerByName / getPetByName each performed a
+  linear scan of the global lists (the docstrings flagged this as a bottleneck).
+
+Change
+  pawpal_system.py — four module-level index dicts plus register/unregister
+  helpers:
+    _owner_id_index, _owner_name_index, _pet_id_index, _pet_name_index
+    _registerOwner / _unregisterOwner / _registerPet / _unregisterPet
+  Index maintenance is hooked into:
+    - newOwner / newPet            (register)
+    - removeOwner / removePet      (unregister)
+    - clearAllData                 (defensive full clear)
+    - setOwnerName / setPetName    (re-key on rename)
+  The getById/getByName functions consult the index first and fall back to a
+  linear scan on a miss, so a stale index can only ever be slower — never wrong.
+  Name indexes store a list per key (names are not unique) and return the first
+  match, preserving the previous first-match behavior.
+
+  Bug fixed along the way: removeOwner previously cascaded pet removal via
+  Owner.removePet(), which left the pets in the global petList. It now calls the
+  global removePet(), so owner deletion fully cleans up pets and keeps the
+  indexes consistent.
+
+Owner benefit
+  Lookups stay fast as the number of owners/pets grows.
+
+
+-------------------------------------------------------------------------------
+#7  DAILY-LOAD / OVERBOOKING CHECK
+-------------------------------------------------------------------------------
+Problem
+  Nothing warned the owner when a single day was packed with more care than is
+  realistic.
+
+Change
+  pawpal_system.py — new functions:
+    getDailyLoad(year, month, date) -> total scheduled minutes across all pets
+    isDateOverbooked(year, month, date, budget_minutes=480) -> bool
+  pawpal_system.py — Owner-scoped equivalents:
+    Owner.getDailyLoad(year, month, date)
+    Owner.isDayOverbooked(year, month, date, budget_minutes=480)
+  Default budget is 480 minutes (8 hours).
+
+  app.py:
+    - DAILY_BUDGET_MINUTES = 480 constant.
+    - Overbooking banner on Today's Schedule (warning if over budget, otherwise a
+      caption showing "used / budget" minutes).
+    - Warning shown after scheduling if the target date becomes overbooked.
+
+Owner benefit
+  The owner is told when a day is unrealistically full instead of discovering it
+  the hard way.
+
+
+-------------------------------------------------------------------------------
+#8  RECURRING TASKS
+-------------------------------------------------------------------------------
+Problem
+  A repeating task (e.g. a daily walk) required creating N separate entries by
+  hand.
+
+Change
+  pawpal_system.py — new function:
+    scheduleRecurring(task, year, month, date, time, occurrences, interval_days=1)
+      - Creates one Scheduler per occurrence, stepping the date forward by
+        interval_days each time (uses datetime.date + timedelta for correct
+        month/year rollover).
+      - Validates occurrences >= 1 and interval_days >= 1.
+      - Returns the list of created Scheduler objects.
+
+  app.py:
+    - "Repeat this task" checkbox in the create form, with inputs for number of
+      occurrences and the interval in days. When checked, the Create button calls
+      scheduleRecurring() instead of a single newScheduler().
+
+Owner benefit
+  One action schedules a routine (e.g. "walk every day for a week") instead of
+  many repetitive manual entries.
+
+
+===============================================================================
+VERIFICATION
+===============================================================================
+- `python -m py_compile app.py pawpal_system.py` passes.
+- Backend integration checks pass for all 8 features (planner ordering,
+  duration-aware conflict detection, free-slot search, daily load / overbooking,
+  index lookups + rename + clear, recurring scheduling).
+- The Streamlit app boots headless and serves HTTP 200 with no errors in the
+  server log.
+===============================================================================
+
+
+===============================================================================
+TARGET FEATURES
+Sort by time · Filter by pet/status · Recurring tasks · Conflict detection
+===============================================================================
+
+This section covers a focused, composable layer the UI calls directly. Where a
+target feature overlaps an earlier item (recurring, conflicts, time sorting),
+the logic was consolidated into a single reusable function so there is one
+source of truth. All functions live in `pawpal_system.py` under the
+"TARGET FEATURES" banner and operate on plain Task/Scheduler objects (no
+Streamlit), so they remain unit-testable.
+
+Shared internal helper:
+  _schedule_sort_key(scheduler) -> (year, month, date, start_minutes)
+    Chronological key used by every sort. start_minutes comes from
+    getStartMinutes() (via timeToMinutes), so schedules sort NUMERICALLY by time
+    rather than by raw string.
+
+
+-------------------------------------------------------------------------------
+T1  SORTING TASKS / SCHEDULES BY TIME
+-------------------------------------------------------------------------------
+Logic (pawpal_system.py)
+  sortSchedulesByTime(schedulers, descending=False) -> List[Scheduler]
+    Sort schedulers chronologically by full date + time. descending=True gives
+    most-recent-first (e.g. a history view).
+  sortTasksByScheduledTime(tasks, descending=False) -> List[Task]
+    A Task has no time of its own -- its Scheduler(s) do -- so each task is keyed
+    on its EARLIEST occurrence. Unscheduled tasks (no schedulers) are always
+    appended last, regardless of sort direction.
+
+UI (app.py)
+  Today's Schedule now builds its ordered list with sortSchedulesByTime(...)
+  instead of an inline lambda, replacing the earlier string-based sort.
+
+Owner benefit
+  The daily timeline is always in correct chronological order, and the sort is
+  reused everywhere instead of being re-written per call site.
+
+
+-------------------------------------------------------------------------------
+T2  FILTERING BY PET / STATUS
+-------------------------------------------------------------------------------
+Logic (pawpal_system.py)
+  filterTasks(tasks, pet=None, completed=None, task_code=None) -> List[Task]
+  filterSchedules(schedulers, pet=None, completed=None, task_code=None)
+                                                          -> List[Scheduler]
+    Filter by any combination of pet, completion status, and task type. Each
+    criterion left as None is ignored (so calling with no args returns a copy
+    unchanged). filterSchedules reaches through each Scheduler to its Task for
+    the status/type checks.
+
+UI (app.py)
+  Today's Schedule gained two dropdowns: "Filter by pet" (All + each pet) and
+  "Filter by status" (All / Pending / Completed). The status label is mapped to
+  the completed flag ({All:None, Pending:False, Completed:True}); the schedule is
+  filtered, then sorted (T1). An empty result shows an informational message.
+
+Owner benefit
+  The owner can quickly narrow the day to one pet, or to just the outstanding
+  (pending) tasks, without scanning the whole list.
+
+
+-------------------------------------------------------------------------------
+T3  HANDLING RECURRING TASKS
+-------------------------------------------------------------------------------
+Logic (pawpal_system.py)
+  Creation (from the earlier work, reused here):
+    scheduleRecurring(task, year, month, date, time, occurrences, interval_days=1)
+      Creates one Scheduler per occurrence, stepping the date forward by
+      interval_days (uses datetime.date + timedelta for correct month/year
+      rollover).
+  Detection / expansion (new):
+    isRecurringTask(task) -> bool
+      True when a task has more than one scheduled occurrence.
+    getRecurringSchedules(task) -> List[Scheduler]
+      The task's occurrences sorted chronologically (empty if not recurring).
+
+UI (app.py)
+  The pet's task list badges recurring tasks with a 🔁 marker
+  (isRecurringTask). The create form's "Repeat this task" option drives
+  scheduleRecurring.
+
+Owner benefit
+  Routines (e.g. a daily walk) are created in one action and clearly marked as
+  repeating in the task list.
+
+
+-------------------------------------------------------------------------------
+T4  BASIC CONFLICT DETECTION
+-------------------------------------------------------------------------------
+Logic (pawpal_system.py)
+  detectConflicts(schedulers) -> List[(Scheduler, Scheduler)]
+    Works over ANY set of schedules (one pet, one owner, a single day...).
+    Buckets by calendar day, sorts each day by start time, and scans once;
+    because each day is sorted it stops as soon as a later task starts at/after
+    the current one ends. Two schedules conflict when their duration-aware time
+    intervals overlap (start_a < end_b AND start_b < end_a).
+  hasConflicts(schedulers) -> bool
+    Convenience boolean wrapper.
+
+  Consolidation: Pet.findConflictingSchedules() was refactored to delegate to
+  detectConflicts(self.getSchedulersByPet()), so pet-, owner-, and day-level
+  conflict checks all share one algorithm (single source of truth).
+
+UI (app.py)
+  Today's Schedule shows a conflict banner when detectConflicts(today_schedule)
+  finds overlaps. A conflict warning also appears after scheduling a task if it
+  creates an overlap for that pet.
+
+Owner benefit
+  Double-bookings (overlapping time windows, not just identical clock times) are
+  surfaced immediately instead of being discovered on the day.
+
+
+-------------------------------------------------------------------------------
+VERIFICATION (Target Features)
+-------------------------------------------------------------------------------
+- `python -m py_compile app.py pawpal_system.py` passes.
+- Integration checks pass: chronological sort order; filter-by-pet and
+  filter-by-status results; recurring detection (isRecurringTask /
+  getRecurringSchedules); duration-aware conflict detection via detectConflicts /
+  hasConflicts; and Pet.findConflictingSchedules() still correct after
+  delegating to the shared function.
+- The Streamlit app boots headless and serves HTTP 200 with no errors in the
+  server log.
+===============================================================================

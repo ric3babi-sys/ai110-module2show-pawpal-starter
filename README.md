@@ -208,12 +208,12 @@ tests/test_pawpal.py ...................                                        
 
 > Fill in once you've implemented scheduling logic.
 
-| Feature | Method(s) | Notes |
-|---------|-----------|-------|
-| Task sorting | | e.g., by priority, duration |
-| Filtering | | e.g., skip tasks if time runs out |
-| Conflict handling | | e.g., overlapping time slots |
-| Recurring tasks | | e.g., daily vs. weekly |
+| Feature           | Method(s)              | Notes                                              |
+|-------------------|------------------------|----------------------------------------------------|
+| Task sorting      |sortTasksByScheduledTime| default chronological, uses year, month, date, time|
+| Filter by status  |filterTasks             | filter by pet, completed task status, task code    |
+| Conflict handling |checkScheduleConflict   | is checked when running newScheduler               |
+| Recurring tasks   |scheduleRecurring       | creates number of schedule slots for one task      |
 
 ## 📸 Demo Walkthrough
 

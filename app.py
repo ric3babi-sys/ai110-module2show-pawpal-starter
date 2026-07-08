@@ -1,6 +1,102 @@
 import streamlit as st
+from datetime import datetime
+
+# Import PawPal+ system classes and functions
+from pawpal_system import (
+    # Core classes
+    Owner, Pet, Task, Scheduler,
+    # Global data structures
+    ownerList, petList, schedulerDictionary, TASK_TYPES,
+    # Owner management functions
+    newOwner,
+    getOwnerByID,
+    getOwnerByName,
+    getAllOwners,
+    removeOwner,
+    getOwnerCount,
+    getSystemStatistics,
+    clearAllData,
+    # Pet management functions
+    newPet,
+    getPetByID,
+    getPetByName,
+    getPetsByOwner,
+    getAllPets,
+    removePet,
+    getPetCount,
+    getPetsByTaskType,
+    getPetsWithPendingTasks,
+    getPetsWithNoTasks,
+    getPetStatistics,
+    # Scheduler management functions
+    newScheduler,
+    getSchedulerByKey,
+    getSchedulersByDate,
+    getSchedulersByPet,
+    getSchedulersByTask,
+    getAllSchedulers,
+    removeScheduler,
+    getSchedulerCount,
+    getSchedulesByDateRange,
+    getSchedulerStatistics,
+    # Planning helpers (weekly improvements)
+    timeToMinutes,
+    buildDayPlan,
+    getFreeSlots,
+    findFreeSlot,
+    getDailyLoad,
+    isDateOverbooked,
+    scheduleRecurring,
+    DEFAULT_TASK_PRIORITY,
+    # Target Features: sorting, filtering, recurring, conflict detection
+    sortSchedulesByTime,
+    filterSchedules,
+    isRecurringTask,
+    detectConflicts,
+    hasConflicts,
+)
+
+# Priority code -> human label, used in the task-creation UI (#3).
+PRIORITY_LABELS = {0: "Low", 1: "Normal", 2: "High", 3: "Urgent"}
+# Daily care-time budget (minutes) used to flag overbooked days (#7).
+DAILY_BUDGET_MINUTES = 480
 
 st.set_page_config(page_title="PawPal+", page_icon="🐾", layout="centered")
+
+
+def init_pawpal_session():
+    """
+    Initialize PawPal+ system objects in session_state.
+    Checks if objects already exist in the "vault" before creating new ones.
+    This prevents data loss across Streamlit reruns.
+    """
+    # Initialize global data structures (persist across reruns)
+    if "ownerList" not in st.session_state:
+        st.session_state.ownerList = []
+        st.session_state.has_initial_data = False
+
+    if "petList" not in st.session_state:
+        st.session_state.petList = []
+
+    if "schedulerDictionary" not in st.session_state:
+        st.session_state.schedulerDictionary = {}
+
+    if "TASK_TYPES" not in st.session_state:
+        st.session_state.TASK_TYPES = TASK_TYPES
+
+    # Track current selections
+    if "current_owner" not in st.session_state:
+        st.session_state.current_owner = None
+
+    if "current_pet" not in st.session_state:
+        st.session_state.current_pet = None
+
+    if "current_tasks" not in st.session_state:
+        st.session_state.current_tasks = []
+
+
+# Initialize session state on app load
+init_pawpal_session()
 
 st.title("🐾 PawPal+")
 
@@ -38,51 +134,339 @@ At minimum, your system should:
 
 st.divider()
 
-st.subheader("Quick Demo Inputs (UI only)")
-owner_name = st.text_input("Owner name", value="Jordan")
-pet_name = st.text_input("Pet name", value="Mochi")
-species = st.selectbox("Species", ["dog", "cat", "other"])
+st.subheader("Owner & Pet Management")
 
-st.markdown("### Tasks")
-st.caption("Add a few tasks. In your final version, these should feed into your scheduler.")
-
-if "tasks" not in st.session_state:
-    st.session_state.tasks = []
-
-col1, col2, col3 = st.columns(3)
+# Owner input section
+col1, col2 = st.columns(2)
 with col1:
-    task_title = st.text_input("Task title", value="Morning walk")
+    owner_name = st.text_input("Owner name", value="Jordan")
+    if st.button("Add Owner"):
+        # Check if owner already exists (prevent duplicates)
+        existing = next((o for o in st.session_state.ownerList if o.getOwnerName().lower() == owner_name.lower()), None)
+        if existing:
+            st.warning(f"Owner '{owner_name}' already exists!")
+        else:
+            owner = newOwner(owner_name)
+            st.session_state.ownerList.append(owner)
+            st.success(f"Added owner: {owner_name}")
+
 with col2:
-    duration = st.number_input("Duration (minutes)", min_value=1, max_value=240, value=20)
-with col3:
-    priority = st.selectbox("Priority", ["low", "medium", "high"], index=2)
-
-if st.button("Add task"):
-    st.session_state.tasks.append(
-        {"title": task_title, "duration_minutes": int(duration), "priority": priority}
-    )
-
-if st.session_state.tasks:
-    st.write("Current tasks:")
-    st.table(st.session_state.tasks)
-else:
-    st.info("No tasks yet. Add one above.")
+    st.write(f"**Total Owners:** {len(st.session_state.ownerList)}")
+    if st.session_state.ownerList:
+        st.write("Current owners:")
+        for owner in st.session_state.ownerList:
+            st.write(f"  • {owner.getOwnerName()}")
 
 st.divider()
 
-st.subheader("Build Schedule")
-st.caption("This button should call your scheduling logic once you implement it.")
+# Pet input section
+if st.session_state.ownerList:
+    selected_owner_name = st.selectbox(
+        "Select owner for pet",
+        [o.getOwnerName() for o in st.session_state.ownerList]
+    )
+    selected_owner = next(o for o in st.session_state.ownerList if o.getOwnerName() == selected_owner_name)
 
-if st.button("Generate schedule"):
-    st.warning(
-        "Not implemented yet. Next step: create your scheduling logic (classes/functions) and call it here."
+    col1, col2 = st.columns(2)
+    with col1:
+        pet_name = st.text_input("Pet name", value="Mochi")
+        if st.button("Add Pet"):
+            # Check if pet already exists for this owner
+            existing = next((p for p in selected_owner.getPetList() if p.getPetName().lower() == pet_name.lower()), None)
+            if existing:
+                st.warning(f"Pet '{pet_name}' already exists for {selected_owner_name}!")
+            else:
+                pet = newPet(pet_name, selected_owner)
+                st.session_state.petList.append(pet)
+                st.success(f"Added pet: {pet_name} to {selected_owner_name}")
+
+    with col2:
+        st.write(f"**Total Pets:** {len(st.session_state.petList)}")
+        if selected_owner.getPetList():
+            st.write(f"**{selected_owner_name}'s pets:**")
+            for pet in selected_owner.getPetList():
+                st.write(f"  • {pet.getPetName()}")
+else:
+    st.info("Add an owner first to manage pets.")
+
+st.markdown("### Scheduling Tasks")
+st.caption("Create tasks for the selected pet and schedule them.")
+
+# Task creation section - requires a pet to be selected
+if st.session_state.petList:
+    # Pet selection for task assignment
+    selected_pet_name = st.selectbox(
+        "Select pet for task",
+        [p.getPetName() for p in st.session_state.petList],
+        key="task_pet_select"
     )
-    st.markdown(
-        """
-Suggested approach:
-1. Design your UML (draft).
-2. Create class stubs (no logic).
-3. Implement scheduling behavior.
-4. Connect your scheduler here and display results.
-"""
-    )
+    selected_pet = next(p for p in st.session_state.petList if p.getPetName() == selected_pet_name)
+
+    # Task creation inputs
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        task_type = st.selectbox(
+            "Task type",
+            list(st.session_state.TASK_TYPES.values()),
+            key="task_type_select"
+        )
+        # Get the task code from the selected task type
+        task_code = [k for k, v in st.session_state.TASK_TYPES.items() if v == task_type][0]
+
+    with col2:
+        duration = st.number_input("Duration (minutes)", min_value=1, max_value=240, value=30, key="task_duration")
+
+    with col3:
+        # Priority defaults to the task type's default, but the owner can override (#3).
+        default_priority = DEFAULT_TASK_PRIORITY.get(task_code, 0)
+        priority = st.selectbox(
+            "Priority",
+            options=[0, 1, 2, 3],
+            index=default_priority,
+            format_func=lambda p: PRIORITY_LABELS[p],
+            key="task_priority",
+        )
+
+    # Task scheduling inputs
+    col1, col2 = st.columns(2)
+    with col1:
+        task_date = st.date_input("Date", value=datetime.now().date(), key="task_date")
+    with col2:
+        task_time = st.time_input("Time", value=datetime.min.time(), key="task_time")
+
+    # Free-slot suggestion for the chosen date + duration (#4)
+    existing_for_date = getSchedulersByDate(task_date.year, task_date.month, task_date.day)
+    suggested_slot = findFreeSlot(existing_for_date, duration)
+    if suggested_slot:
+        st.caption(f"💡 Earliest free {duration}-min slot on {task_date.strftime('%b %d')}: **{suggested_slot}**")
+    else:
+        st.caption(f"⚠️ No free {duration}-min slot found on {task_date.strftime('%b %d')} within 08:00–20:00.")
+
+    # Daily task flag: auto-recreates itself for the next day when completed.
+    daily = st.checkbox("Daily task (re-creates itself for the next day when completed)",
+                        key="task_daily")
+
+    # Recurring schedule options (#8)
+    repeat = st.checkbox("Repeat this task", key="task_repeat")
+    if repeat:
+        rcol1, rcol2 = st.columns(2)
+        with rcol1:
+            occurrences = st.number_input("Occurrences", min_value=2, max_value=60, value=7, key="task_occurrences")
+        with rcol2:
+            interval_days = st.number_input("Every N days", min_value=1, max_value=30, value=1, key="task_interval")
+    else:
+        occurrences = 1
+        interval_days = 1
+
+    if st.button("Create & Schedule Task"):
+        try:
+            time_str = f"{task_time.hour:02d}:{task_time.minute:02d}"
+
+            # Create the Task object with the chosen priority and daily flag
+            task = Task(pet=selected_pet, taskCode=task_code, priority=priority, isDaily=daily)
+            task.setTaskDuration(duration)
+
+            # Add task to pet's task list
+            result = selected_pet.addPetTask(task)
+            if result:
+                if repeat:
+                    # Create one Scheduler per occurrence (#8)
+                    created = scheduleRecurring(
+                        task,
+                        task_date.year, task_date.month, task_date.day,
+                        time_str,
+                        occurrences=int(occurrences),
+                        interval_days=int(interval_days),
+                    )
+                    st.success(f"✓ Created recurring {task_type} task for {selected_pet_name}")
+                    st.info(f"Scheduled {len(created)} times, every {int(interval_days)} day(s) at {time_str}, "
+                            f"starting {task_date.strftime('%Y-%m-%d')}")
+                else:
+                    # Create a single Scheduler for the task
+                    newScheduler(
+                        task,
+                        year=task_date.year,
+                        month=task_date.month,
+                        date=task_date.day,
+                        time=time_str,
+                    )
+                    daily_note = " · 🔁 daily" if daily else ""
+                    st.success(f"✓ Created {task_type} task for {selected_pet_name}{daily_note}")
+                    st.info(f"Scheduled for {task_date.strftime('%Y-%m-%d')} at {time_str} "
+                            f"(priority: {PRIORITY_LABELS[priority]})")
+
+                # Warn if the start date is now overbooked (#7)
+                if isDateOverbooked(task_date.year, task_date.month, task_date.day, DAILY_BUDGET_MINUTES):
+                    load = getDailyLoad(task_date.year, task_date.month, task_date.day)
+                    st.warning(f"⚠️ {task_date.strftime('%b %d')} is overbooked: "
+                               f"{load} min scheduled (budget {DAILY_BUDGET_MINUTES} min).")
+
+                # Surface any time conflicts this created for the pet (#1)
+                conflicts = selected_pet.findConflictingSchedules()
+                if conflicts:
+                    st.warning(f"⚠️ {selected_pet_name} has {len(conflicts)} overlapping schedule(s). "
+                               "Check the times below.")
+            else:
+                st.error("Failed to add task to pet (duplicate detected)")
+
+        except Exception as e:
+            st.error(f"Error creating task: {str(e)}")
+
+    # Display tasks for selected pet
+    if selected_pet.getPetTaskList():
+        st.write(f"**{selected_pet_name}'s Tasks ({selected_pet.getTaskCount()}):**")
+        for task in selected_pet.getPetTaskList():
+            col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
+            with col1:
+                # Badge daily tasks and recurring tasks (more than one occurrence).
+                badge = ""
+                if task.isDailyTask():
+                    badge = " 🔁 daily"
+                elif isRecurringTask(task):
+                    badge = " 🔁"
+                st.write(f"  • {task.getTaskDescription()}{badge}")
+            with col2:
+                st.write(f"Duration: {task.getTaskDuration()} min")
+            with col3:
+                st.write(f"Priority: {PRIORITY_LABELS[task.getPriority()]}")
+            with col4:
+                status = "✓ Completed" if task.isTaskCompleted() else "⏳ Pending"
+                st.write(status)
+    else:
+        st.info(f"No tasks yet for {selected_pet_name}.")
+
+    # --- Plan My Day (#2): greedily order the owner's pending tasks ---
+    plan_owner = selected_pet.getOwner()
+    with st.expander(f"🗓️ Plan {plan_owner.getOwnerName()}'s day", expanded=False):
+        pcol1, pcol2 = st.columns(2)
+        with pcol1:
+            day_start = st.time_input("Day starts", value=datetime.strptime("08:00", "%H:%M").time(), key="plan_start")
+        with pcol2:
+            day_end = st.time_input("Day ends", value=datetime.strptime("20:00", "%H:%M").time(), key="plan_end")
+
+        if st.button("Build plan"):
+            plan = plan_owner.planDay(
+                day_start=f"{day_start.hour:02d}:{day_start.minute:02d}",
+                day_end=f"{day_end.hour:02d}:{day_end.minute:02d}",
+            )
+            if plan["planned"]:
+                st.write(f"**Suggested order ({plan['total_minutes']} min of care):**")
+                for item in plan["planned"]:
+                    task = item["task"]
+                    st.write(f"`{item['start']}–{item['end']}` — {task.getPet().getPetName()}: "
+                             f"{task.getTaskDescription()} ({PRIORITY_LABELS[task.getPriority()]})")
+            else:
+                st.info("No pending tasks with a duration to plan.")
+
+            if plan["unplaced"]:
+                st.warning(f"{len(plan['unplaced'])} task(s) didn't fit in the window:")
+                for task in plan["unplaced"]:
+                    st.write(f"  • {task.getPet().getPetName()}: {task.getTaskDescription()} "
+                             f"({task.getTaskDuration()} min)")
+
+else:
+    st.info("Add a pet first to create and schedule tasks.")
+
+st.divider()
+
+st.subheader("📅 Today's Schedule")
+st.caption("View all tasks scheduled for today.")
+
+# Get today's date
+today = datetime.now()
+today_year = today.year
+today_month = today.month
+today_day = today.day
+
+# Retrieve today's schedule using getSchedulersByDate
+today_schedule = getSchedulersByDate(today_year, today_month, today_day)
+
+if today_schedule:
+    st.write(f"**Date:** {today.strftime('%A, %B %d, %Y')}")
+    st.write(f"**Total activities scheduled:** {len(today_schedule)}")
+
+    # Daily-load / overbooking banner (#7)
+    todays_load = getDailyLoad(today_year, today_month, today_day)
+    if isDateOverbooked(today_year, today_month, today_day, DAILY_BUDGET_MINUTES):
+        st.warning(f"⚠️ Today is overbooked: {todays_load} min scheduled "
+                   f"(budget {DAILY_BUDGET_MINUTES} min).")
+    else:
+        st.caption(f"Total care time today: {todays_load} / {DAILY_BUDGET_MINUTES} min budget.")
+
+    # Conflict banner: flag overlapping schedules anywhere in today's plan.
+    todays_conflicts = detectConflicts(today_schedule)
+    if todays_conflicts:
+        st.warning(f"⚠️ {len(todays_conflicts)} overlapping schedule(s) today. "
+                   "Overlapping tasks share a time window.")
+
+    # Filter controls (by pet / by status) -- Target Feature.
+    fcol1, fcol2 = st.columns(2)
+    with fcol1:
+        pet_names = ["All pets"] + [p.getPetName() for p in st.session_state.petList]
+        pet_filter = st.selectbox("Filter by pet", pet_names, key="today_pet_filter")
+    with fcol2:
+        status_filter = st.selectbox("Filter by status", ["All", "Pending", "Completed"],
+                                     key="today_status_filter")
+
+    # Resolve the selected pet object (None = all pets).
+    selected_filter_pet = None
+    if pet_filter != "All pets":
+        selected_filter_pet = next(
+            (p for p in st.session_state.petList if p.getPetName() == pet_filter), None)
+    # Map the status label to the completed flag filterSchedules expects.
+    completed_filter = {"All": None, "Pending": False, "Completed": True}[status_filter]
+
+    # Filter first, then sort chronologically (Target Features).
+    filtered_schedule = filterSchedules(
+        today_schedule, pet=selected_filter_pet, completed=completed_filter)
+    sorted_schedule = sortSchedulesByTime(filtered_schedule)
+
+    if not sorted_schedule:
+        st.info("No scheduled tasks match the current filter.")
+
+    # Display each scheduled task
+    col1, col2, col3, col4 = st.columns([1.5, 2, 1.5, 1.5])
+    with col1:
+        st.write("**Time**")
+    with col2:
+        st.write("**Pet**")
+    with col3:
+        st.write("**Task**")
+    with col4:
+        st.write("**Duration**")
+
+    for idx, scheduler in enumerate(sorted_schedule):
+        col1, col2, col3, col4 = st.columns([1.5, 2, 1.5, 1.5])
+        with col1:
+            st.write(f"`{scheduler.getTime()}`")
+        with col2:
+            st.write(scheduler.getPetName())
+        with col3:
+            st.write(scheduler.getTaskType())
+        with col4:
+            st.write(f"{scheduler.getTaskDuration()} min")
+
+    # Show system statistics
+    st.divider()
+    st.subheader("📊 System Statistics")
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        stats = getSystemStatistics()
+        st.metric("Total Owners", stats['total_owners'])
+
+    with col2:
+        st.metric("Total Pets", stats['total_pets'])
+
+    with col3:
+        st.metric("Today's Tasks", len(today_schedule))
+
+    # Show task completion rates
+    if st.session_state.petList:
+        st.write("**Pet Task Status:**")
+        for pet in st.session_state.petList:
+            progress = pet.getTaskCompletionRate()
+            st.progress(progress / 100, text=f"{pet.getPetName()}: {pet.getCompletedTaskCount()}/{pet.getTaskCount()} completed")
+
+else:
+    st.info(f"No tasks scheduled for {today.strftime('%B %d, %Y')}. Create and schedule some tasks above!")

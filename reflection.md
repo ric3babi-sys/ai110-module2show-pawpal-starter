@@ -47,6 +47,7 @@ Three core functions to provide are
 - Did your design change during implementation?
   Claude Code identified 5 Missing Relationships and 6 Critical Bottlenecks.
 - If yes, describe at least one change and why you made it.
+  As documented in DesignChanges.txt; BOTTLENECK #6: NO TASK STATUS FILTERING describes missing functionality. Originally, only Pet.getPetTaskList() was implemented. There was no way to filter a pet's task status. This is a bottleneck because you can't identify which tasks were completed or not. You had to programatically loop thru all tasks. By defining filter member methods we can re-use this logic.
 
 ---
 
@@ -55,12 +56,16 @@ Three core functions to provide are
 **a. Constraints and priorities**
 
 - What constraints does your scheduler consider (for example: time, priority, preferences)?
+  My constraint focus was on prioritizing tasks defined in global dictionary DEFAULT_TASK_PRIORITY.
 - How did you decide which constraints mattered most?
+  I set the scale according to my interpretation of a pet's activities. This is biased because the scale is my personal preference.
 
 **b. Tradeoffs**
 
 - Describe one tradeoff your scheduler makes.
+  The lookup for scheduler is indexed by date in global variable schedulerDictionary.
 - Why is that tradeoff reasonable for this scenario?
+  This makes lookup for a date ver fast. I choose this strategy because I think looking up scheduled tasks by date provides a more robust presentation allowing the view for daily activities. The tradeoff is all other queries are slow because to get at a desired filter, you need to traverse the object graph, e.g. scheduler -> task -> status
 
 ---
 

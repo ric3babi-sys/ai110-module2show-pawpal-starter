@@ -48,6 +48,87 @@ petList: List['Pet'] = []
 schedulerDictionary: dict = {}
 
 
+# ---------------------------------------------------------------------------
+# Time helpers (shared by scheduling, conflict detection, and planning logic)
+# ---------------------------------------------------------------------------
+
+def timeToMinutes(time_str: str) -> int:
+    """
+    Convert an "HH:MM" time string into minutes since midnight.
+    Example: "09:30" -> 570. Used for numeric time sorting and interval math.
+    Raises ValueError if the string is not valid HH:MM.
+    """
+    hours, minutes = map(int, time_str.split(":"))
+    if not (0 <= hours <= 23) or not (0 <= minutes <= 59):
+        raise ValueError(f"Invalid time '{time_str}'. Expected HH:MM (00:00-23:59)")
+    return hours * 60 + minutes
+
+
+def minutesToTime(total_minutes: int) -> str:
+    """
+    Convert minutes since midnight back into an "HH:MM" string.
+    Example: 570 -> "09:30". Clamps within a single day (0-1439).
+    """
+    total_minutes = max(0, min(total_minutes, 24 * 60 - 1))
+    return f"{total_minutes // 60:02d}:{total_minutes % 60:02d}"
+
+
+# Default priority per task type (higher = more urgent), used when a Task is
+# created without an explicit priority. Vet visits outrank feeding, walks, naps.
+DEFAULT_TASK_PRIORITY = {
+    0: 1,  # Walk Pet
+    1: 2,  # Feed Pet
+    2: 0,  # Nap Time
+    3: 3,  # Veterinarian Visit
+}
+
+
+# ---------------------------------------------------------------------------
+# Lookup indexes: O(1) id/name resolution instead of scanning the global lists.
+# Maintained by newOwner/newPet, removeOwner/removePet, and the setName methods.
+# getById/getByName fall back to a linear scan on a miss, so a stale index can
+# never produce a wrong answer -- only a slower one.
+# ---------------------------------------------------------------------------
+_owner_id_index: dict = {}
+_owner_name_index: dict = {}
+_pet_id_index: dict = {}
+_pet_name_index: dict = {}
+
+
+def _index_add(index: dict, key, obj) -> None:
+    """Append obj to the list stored under key (creating the list if needed)."""
+    index.setdefault(key, []).append(obj)
+
+
+def _index_remove(index: dict, key, obj) -> None:
+    """Remove obj from the list stored under key, dropping the key if it empties."""
+    bucket = index.get(key)
+    if bucket and obj in bucket:
+        bucket.remove(obj)
+        if not bucket:
+            del index[key]
+
+
+def _registerOwner(owner: 'Owner') -> None:
+    _owner_id_index[owner.getOwnerID()] = owner
+    _index_add(_owner_name_index, owner.getOwnerName().lower().strip(), owner)
+
+
+def _unregisterOwner(owner: 'Owner') -> None:
+    _owner_id_index.pop(owner.getOwnerID(), None)
+    _index_remove(_owner_name_index, owner.getOwnerName().lower().strip(), owner)
+
+
+def _registerPet(pet: 'Pet') -> None:
+    _pet_id_index[pet.getPetID()] = pet
+    _index_add(_pet_name_index, pet.getPetName().lower().strip(), pet)
+
+
+def _unregisterPet(pet: 'Pet') -> None:
+    _pet_id_index.pop(pet.getPetID(), None)
+    _index_remove(_pet_name_index, pet.getPetName().lower().strip(), pet)
+
+
 def newOwner(ownerName: str) -> 'Owner':
     """
     Create a new Owner instance and add it to the global ownerList.
@@ -62,6 +143,7 @@ def newOwner(ownerName: str) -> 'Owner':
     """
     new_owner = Owner(ownerName=ownerName)
     ownerList.append(new_owner)
+    _registerOwner(new_owner)
     return new_owner
 
 
@@ -69,8 +151,11 @@ def getOwnerByID(owner_id: int) -> Optional['Owner']:
     """
     Search global ownerList for owner with matching ID.
     Returns Owner object if found, None otherwise.
-    O(n) search; consider maintaining a dict index for large lists.
+    O(1) via _owner_id_index, with a linear-scan fallback for safety.
     """
+    owner = _owner_id_index.get(owner_id)
+    if owner is not None:
+        return owner
     for owner in ownerList:
         if owner.getOwnerID() == owner_id:
             return owner
@@ -81,9 +166,12 @@ def getOwnerByName(owner_name: str) -> Optional['Owner']:
     """
     Search global ownerList for owner with matching name (case-insensitive).
     Returns first matching Owner object if found, None otherwise.
-    O(n) search; consider maintaining a dict index for large lists.
+    O(1) via _owner_name_index, with a linear-scan fallback for safety.
     """
     name_lower = owner_name.lower().strip()
+    bucket = _owner_name_index.get(name_lower)
+    if bucket:
+        return bucket[0]
     for owner in ownerList:
         if owner.getOwnerName().lower() == name_lower:
             return owner
@@ -106,8 +194,9 @@ def removeOwner(owner: 'Owner') -> bool:
 
     # Remove all pets (which cascades to remove their tasks and schedulers)
     for pet in owner.getPetList()[:]:  # Create copy to avoid modification during iteration
-        owner.removePet(pet)
+        removePet(pet)
 
+    _unregisterOwner(owner)
     ownerList.remove(owner)
     return True
 
@@ -158,6 +247,11 @@ def clearAllData() -> int:
     count = len(ownerList)
     for owner in ownerList[:]:  # Create copy to avoid modification during iteration
         removeOwner(owner)
+    # Defensive: ensure indexes are fully cleared even if a cascade missed one.
+    _owner_id_index.clear()
+    _owner_name_index.clear()
+    _pet_id_index.clear()
+    _pet_name_index.clear()
     return count
 
 
@@ -179,6 +273,7 @@ def newPet(petName: str, owner: 'Owner') -> 'Pet':
     """
     new_pet = Pet(petName=petName, owner=owner)
     petList.append(new_pet)
+    _registerPet(new_pet)
     return new_pet
 
 
@@ -186,8 +281,11 @@ def getPetByID(pet_id: int) -> Optional['Pet']:
     """
     Search global petList for pet with matching ID.
     Returns Pet object if found, None otherwise.
-    O(n) search; consider maintaining a dict index for large lists.
+    O(1) via _pet_id_index, with a linear-scan fallback for safety.
     """
+    pet = _pet_id_index.get(pet_id)
+    if pet is not None:
+        return pet
     for pet in petList:
         if pet.getPetID() == pet_id:
             return pet
@@ -199,9 +297,12 @@ def getPetByName(pet_name: str) -> Optional['Pet']:
     Search global petList for pet with matching name (case-insensitive).
     Returns first matching Pet object if found, None otherwise.
     NOTE: Multiple pets can have the same name. Use getPetByID() for unique lookup.
-    O(n) search; consider maintaining a dict index for large lists.
+    O(1) via _pet_name_index, with a linear-scan fallback for safety.
     """
     name_lower = pet_name.lower().strip()
+    bucket = _pet_name_index.get(name_lower)
+    if bucket:
+        return bucket[0]
     for pet in petList:
         if pet.getPetName().lower() == name_lower:
             return pet
@@ -237,6 +338,7 @@ def removePet(pet: 'Pet') -> bool:
     if owner and pet in owner.getPetList():
         owner.removePet(pet)
 
+    _unregisterPet(pet)
     petList.remove(pet)
     return True
 
@@ -298,6 +400,35 @@ def getPetStatistics() -> dict:
         'system_completion_rate': (total_completed / total_tasks * 100) if total_tasks > 0 else 0.0,
         'pet_details': pet_details
     }
+
+
+def checkScheduleConflict(year: int, month: int, date: int, time: str,
+                          ignore: Optional['Scheduler'] = None) -> Optional[str]:
+    """
+    Lightweight, NON-FATAL conflict detection for a proposed schedule slot.
+
+    Returns a human-readable warning message if another scheduler is already
+    booked for the exact same date AND time (for the same pet or a different
+    one), or None if the slot is free. It never raises -- callers get advice,
+    not a crash.
+
+    'Lightweight' means an exact date + start-time match only (no duration /
+    interval math). For duration-aware overlap detection use detectConflicts().
+
+    Pass `ignore` to exclude a specific scheduler from the check (e.g. the one
+    just added), so a schedule does not report a conflict with itself.
+    """
+    key = f"{year}{month:02d}{date:02d}"
+    same_slot = [
+        s for s in schedulerDictionary.get(key, [])
+        if s is not ignore and s.getTime() == time
+    ]
+    if not same_slot:
+        return None
+
+    who = ", ".join(f"{s.getPetName()} ({s.getTaskType()})" for s in same_slot)
+    date_str = f"{year:04d}-{month:02d}-{date:02d}"
+    return f"⚠️ Schedule conflict at {date_str} {time}: slot already booked for {who}."
 
 
 def newScheduler(task: 'Task', year: int, month: int, date: int, time: str) -> 'Scheduler':
@@ -364,6 +495,17 @@ def newScheduler(task: 'Task', year: int, month: int, date: int, time: str) -> '
         schedulerDictionary[key] = []
 
     schedulerDictionary[key].append(new_scheduler)
+
+    # Lightweight, non-fatal conflict check: if another task is already booked at
+    # this exact date and time, print a warning instead of raising. The schedule
+    # is still created -- the owner is simply advised of the clash.
+    warning = checkScheduleConflict(
+        new_scheduler.year, new_scheduler.month, new_scheduler.date,
+        new_scheduler.getTime(), ignore=new_scheduler,
+    )
+    if warning:
+        print(warning)
+
     return new_scheduler
 
 
@@ -502,6 +644,291 @@ def getSchedulerStatistics() -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Planning algorithms (#2 day planner, #4 free-slot finder, #7 daily load,
+# #8 recurring scheduling). These operate on plain Task/Scheduler objects so
+# they are easy to unit test without Streamlit.
+# ---------------------------------------------------------------------------
+
+def buildDayPlan(tasks: List['Task'], day_start: str = "08:00", day_end: str = "20:00") -> dict:
+    """
+    Greedily build an ordered day plan from a list of tasks (#2).
+
+    Tasks are sorted by priority (high first), then by duration (short first) so
+    urgent, quick wins are placed first. Each task is packed back-to-back from
+    day_start; anything that no longer fits before day_end is returned unplaced.
+
+    Returns a dict:
+        {
+          'planned':  [{'task', 'start', 'end', 'start_minutes', 'duration'}, ...],
+          'unplaced': [Task, ...],   # zero-duration or didn't fit in the window
+          'day_start', 'day_end',
+          'total_minutes': minutes of care actually scheduled
+        }
+    """
+    start = timeToMinutes(day_start)
+    end = timeToMinutes(day_end)
+    # Priority high->low, then shortest duration first.
+    ordered = sorted(tasks, key=lambda t: (-t.getPriority(), t.getTaskDuration()))
+
+    planned = []
+    unplaced = []
+    cursor = start
+    for task in ordered:
+        duration = task.getTaskDuration()
+        if duration <= 0:
+            unplaced.append(task)
+            continue
+        if cursor + duration <= end:
+            planned.append({
+                'task': task,
+                'start': minutesToTime(cursor),
+                'end': minutesToTime(cursor + duration),
+                'start_minutes': cursor,
+                'duration': duration,
+            })
+            cursor += duration
+        else:
+            unplaced.append(task)
+
+    return {
+        'planned': planned,
+        'unplaced': unplaced,
+        'day_start': day_start,
+        'day_end': day_end,
+        'total_minutes': cursor - start,
+    }
+
+
+def getFreeSlots(schedulers: List['Scheduler'], day_start: str = "08:00",
+                 day_end: str = "20:00") -> List[tuple]:
+    """
+    Return the open gaps (#4) between the busy intervals of the given schedulers,
+    within [day_start, day_end]. Overlapping/adjacent busy blocks are merged.
+    Returns a list of ("HH:MM", "HH:MM") tuples in chronological order.
+    """
+    start = timeToMinutes(day_start)
+    end = timeToMinutes(day_end)
+
+    busy = sorted(
+        ((s.getStartMinutes(), s.getEndMinutes()) for s in schedulers if s.getTime()),
+        key=lambda pair: pair[0],
+    )
+
+    slots = []
+    cursor = start
+    for b_start, b_end in busy:
+        b_start = max(b_start, start)
+        b_end = min(b_end, end)
+        if b_start > cursor:
+            slots.append((cursor, b_start))
+        cursor = max(cursor, b_end)
+    if cursor < end:
+        slots.append((cursor, end))
+
+    return [(minutesToTime(s), minutesToTime(e)) for s, e in slots if e > s]
+
+
+def findFreeSlot(schedulers: List['Scheduler'], duration: int, day_start: str = "08:00",
+                 day_end: str = "20:00") -> Optional[str]:
+    """
+    Return the earliest start time ("HH:MM") that fits a task of the given
+    duration around the existing schedulers (#4), or None if no gap is big enough.
+    """
+    for slot_start, slot_end in getFreeSlots(schedulers, day_start, day_end):
+        if timeToMinutes(slot_end) - timeToMinutes(slot_start) >= duration:
+            return slot_start
+    return None
+
+
+def getDailyLoad(year: int, month: int, date: int) -> int:
+    """Return the total scheduled minutes across all pets for a given date (#7)."""
+    return sum(s.getTaskDuration() for s in getSchedulersByDate(year, month, date))
+
+
+def isDateOverbooked(year: int, month: int, date: int, budget_minutes: int = 480) -> bool:
+    """
+    Return True if the scheduled care on a date exceeds budget_minutes (#7).
+    Default budget is 8 hours (480 minutes).
+    """
+    return getDailyLoad(year, month, date) > budget_minutes
+
+
+def scheduleRecurring(task: 'Task', year: int, month: int, date: int, time: str,
+                      occurrences: int, interval_days: int = 1) -> List['Scheduler']:
+    """
+    Create a repeating schedule for a task (#8): one Scheduler per occurrence,
+    starting at the given date and stepping forward by interval_days each time.
+
+    Example: scheduleRecurring(walk, 2026, 7, 7, "09:00", occurrences=7)
+             schedules a daily 09:00 walk for a week.
+
+    Returns the list of created Scheduler objects. Raises ValueError on bad counts.
+    """
+    from datetime import date as _date, timedelta
+
+    if occurrences < 1:
+        raise ValueError(f"occurrences must be >= 1, got {occurrences}")
+    if interval_days < 1:
+        raise ValueError(f"interval_days must be >= 1, got {interval_days}")
+
+    created = []
+    current = _date(year, month, date)
+    for _ in range(occurrences):
+        scheduler = newScheduler(task, current.year, current.month, current.day, time)
+        created.append(scheduler)
+        current = current + timedelta(days=interval_days)
+    return created
+
+
+# ===========================================================================
+# TARGET FEATURES
+# Composable building blocks the UI leans on directly:
+#   - sort tasks/schedules by time
+#   - filter tasks/schedules by pet and/or completion status (and task type)
+#   - handle recurring tasks (create + detect + expand)
+#   - basic conflict detection over any set of schedules
+# These operate on plain Task/Scheduler objects so they stay unit-testable.
+# ===========================================================================
+
+def _schedule_sort_key(scheduler: 'Scheduler') -> tuple:
+    """Chronological sort key for a Scheduler: (year, month, date, start-minutes)."""
+    # getStartMinutes() converts the "HH:MM" string to minutes since midnight so
+    # times sort numerically rather than lexically (a bad/unpadded value can't
+    # scramble the order the way a plain string compare would).
+    return (scheduler.year, scheduler.month, scheduler.date, scheduler.getStartMinutes())
+
+
+def sortSchedulesByTime(schedulers: List['Scheduler'], descending: bool = False) -> List['Scheduler']:
+    """
+    Return the given schedulers sorted chronologically by full date + time.
+    Set descending=True for most-recent-first (e.g. a history view).
+    """
+    return sorted(schedulers, key=_schedule_sort_key, reverse=descending)
+
+
+def sortTasksByScheduledTime(tasks: List['Task'], descending: bool = False) -> List['Task']:
+    """
+    Sort tasks by their EARLIEST scheduled time. A Task has no time of its own
+    (its Scheduler(s) do), so we key each task on the earliest occurrence in its
+    schedulerList. Unscheduled tasks have no time, so they are always appended
+    last regardless of sort direction.
+    """
+    scheduled = [t for t in tasks if t.getSchedulerList()]
+    unscheduled = [t for t in tasks if not t.getSchedulerList()]
+
+    def key(task: 'Task') -> tuple:
+        earliest = min(task.getSchedulerList(), key=_schedule_sort_key)
+        return _schedule_sort_key(earliest)
+
+    scheduled.sort(key=key, reverse=descending)
+    return scheduled + unscheduled
+
+
+def filterTasks(tasks: List['Task'], pet: Optional['Pet'] = None,
+                completed: Optional[bool] = None,
+                task_code: Optional[int] = None) -> List['Task']:
+    """
+    Filter a list of tasks by any combination of pet, completion status, and task
+    type. A criterion left as None is ignored, so filterTasks(tasks) returns a
+    copy unchanged. Example: filterTasks(tasks, pet=mochi, completed=False).
+    """
+    result = list(tasks)
+    if pet is not None:
+        result = [t for t in result if t.getPet() == pet]
+    if completed is not None:
+        result = [t for t in result if t.isTaskCompleted() == completed]
+    if task_code is not None:
+        result = [t for t in result if t.getTaskCode() == task_code]
+    return result
+
+
+def filterSchedules(schedulers: List['Scheduler'], pet: Optional['Pet'] = None,
+                    completed: Optional[bool] = None,
+                    task_code: Optional[int] = None) -> List['Scheduler']:
+    """
+    Filter schedulers by pet and/or the underlying task's completion status and
+    type. Mirrors filterTasks() but works on Scheduler objects, reaching through
+    to the task where needed. A criterion left as None is ignored.
+    """
+    result = list(schedulers)
+    if pet is not None:
+        result = [s for s in result if s.getPet() == pet]
+    if completed is not None:
+        result = [s for s in result
+                  if s.getTask() and s.getTask().isTaskCompleted() == completed]
+    if task_code is not None:
+        result = [s for s in result
+                  if s.getTask() and s.getTask().getTaskCode() == task_code]
+    return result
+
+
+def filterTaskByCompletedStatus(completed: bool) -> List['Task']:
+    """
+    Return every Task instance in the system whose `completed` attribute matches
+    the given boolean, collected across all pets in the global petList.
+
+        filterTaskByCompletedStatus(True)  -> all completed tasks
+        filterTaskByCompletedStatus(False) -> all pending (incomplete) tasks
+
+    Thin global wrapper over filterTasks(); useful for system-wide reporting.
+    """
+    all_tasks = []
+    for pet in petList:
+        all_tasks.extend(pet.getPetTaskList())
+    return filterTasks(all_tasks, completed=completed)
+
+
+def isRecurringTask(task: 'Task') -> bool:
+    """
+    A task counts as 'recurring' when it has more than one scheduled occurrence
+    (as produced by scheduleRecurring()). Lets the UI badge repeating tasks.
+    """
+    return task.getScheduleCount() > 1
+
+
+def getRecurringSchedules(task: 'Task') -> List['Scheduler']:
+    """
+    Return a recurring task's occurrences sorted chronologically, or an empty
+    list if the task is not recurring (fewer than 2 schedules).
+    """
+    if not isRecurringTask(task):
+        return []
+    return sortSchedulesByTime(task.getSchedulerList())
+
+
+def detectConflicts(schedulers: List['Scheduler']) -> List[tuple]:
+    """
+    Basic conflict detection over ANY set of schedules (one pet, one owner, a
+    single day, whatever the caller passes). Returns (Scheduler, Scheduler) pairs
+    whose time intervals overlap on the same calendar day.
+
+    Algorithm: bucket by day, sort each day by start time, then scan once. Because
+    a day's schedules are sorted, we stop as soon as a later task starts at/after
+    the current task ends -- no remaining task in that day can overlap it.
+    """
+    conflicts = []
+    by_date = {}
+    for sched in schedulers:
+        if not sched.getTime():
+            continue  # skip timeless/unscheduled entries
+        by_date.setdefault((sched.year, sched.month, sched.date), []).append(sched)
+
+    for group in by_date.values():
+        group.sort(key=lambda s: s.getStartMinutes())
+        for i, sched1 in enumerate(group):
+            for sched2 in group[i + 1:]:
+                if sched2.getStartMinutes() >= sched1.getEndMinutes():
+                    break  # sorted: nothing later can overlap sched1
+                conflicts.append((sched1, sched2))
+    return conflicts
+
+
+def hasConflicts(schedulers: List['Scheduler']) -> bool:
+    """Convenience boolean: True if any two of the given schedules overlap."""
+    return len(detectConflicts(schedulers)) > 0
+
+
 @dataclass
 class Owner:
     """
@@ -566,7 +993,11 @@ class Owner:
         """
         if not name or name.strip() == "":
             raise ValueError("Owner name cannot be empty or whitespace")
+        # Keep the name index consistent: drop the old key, add the new one.
+        _index_remove(_owner_name_index, self.ownerName.lower().strip(), self)
         self.ownerName = name.strip()
+        if self in ownerList:
+            _index_add(_owner_name_index, self.ownerName.lower().strip(), self)
 
     def addPet(self, pet: 'Pet') -> bool:
         """
@@ -736,6 +1167,22 @@ class Owner:
     def hasSchedulesOnDate(self, year: int, month: int, date: int) -> bool:
         """Check if owner has any schedules on a specific date across all pets."""
         return len(self.getSchedulesByDate(year, month, date)) > 0
+
+    def getDailyLoad(self, year: int, month: int, date: int) -> int:
+        """Return this owner's total scheduled minutes on a given date (#7)."""
+        return sum(s.getTaskDuration() for s in self.getSchedulesByDate(year, month, date))
+
+    def isDayOverbooked(self, year: int, month: int, date: int,
+                        budget_minutes: int = 480) -> bool:
+        """Return True if this owner's care load on a date exceeds budget_minutes (#7)."""
+        return self.getDailyLoad(year, month, date) > budget_minutes
+
+    def planDay(self, day_start: str = "08:00", day_end: str = "20:00") -> dict:
+        """
+        Build a suggested plan (#2) for this owner's pending tasks across all pets,
+        ordered by priority then duration. See buildDayPlan() for the return shape.
+        """
+        return buildDayPlan(self.getAllPendingTasks(), day_start, day_end)
 
     def getBusiestDate(self) -> Optional[tuple]:
         """
@@ -963,7 +1410,11 @@ class Pet:
         """
         if not name or name.strip() == "":
             raise ValueError("Pet name cannot be empty or whitespace")
+        # Keep the name index consistent: drop the old key, add the new one.
+        _index_remove(_pet_name_index, self.petName.lower().strip(), self)
         self.petName = name.strip()
+        if self in petList:
+            _index_add(_pet_name_index, self.petName.lower().strip(), self)
 
     def addPetTask(self, task: 'Task') -> bool:
         """
@@ -1296,24 +1747,16 @@ class Pet:
 
     def findConflictingSchedules(self) -> List[tuple]:
         """
-        Find overlapping/conflicting schedules for this pet.
-        Returns list of tuples containing conflicting Scheduler pairs.
-        LIMITATION: Basic implementation checks same date/time.
-        More sophisticated conflict detection (time ranges) could be added.
+        Find overlapping/conflicting schedules for this pet (#1).
+        Returns a list of (Scheduler, Scheduler) tuples whose time intervals
+        overlap on the same day, using duration-aware interval comparison rather
+        than an exact-time match. A 60-min walk at 09:00 conflicts with a feed at
+        09:30, for example.
+
+        Delegates to the shared detectConflicts() so pet-, owner-, and day-level
+        conflict checks all use one algorithm (single source of truth).
         """
-        conflicts = []
-        schedulers = self.getSchedulersByPet()
-
-        for i, sched1 in enumerate(schedulers):
-            for sched2 in schedulers[i+1:]:
-                # Check if same date and time
-                if (sched1.year == sched2.year and
-                    sched1.month == sched2.month and
-                    sched1.date == sched2.date and
-                    sched1.getTime() == sched2.getTime()):
-                    conflicts.append((sched1, sched2))
-
-        return conflicts
+        return detectConflicts(self.getSchedulersByPet())
 
     def getSchedulersByDate(self, year: int, month: int, date: int) -> List['Scheduler']:
         """
@@ -1389,6 +1832,11 @@ class Task:
     taskCode: int
     taskID: int = field(default=0, init=False)
     duration: int = field(default=0)
+    # Priority 0-3 (higher = more urgent). Default -1 means "derive from taskCode".
+    priority: int = field(default=-1)
+    # Daily recurring flag: when a daily task is completed, doTask() automatically
+    # spawns a fresh instance scheduled one day later (see _spawnNextOccurrence).
+    isDaily: bool = field(default=False)
     completed: bool = field(default=False)
     completed_at: Optional[datetime] = field(default=None)
     schedulerList: List['Scheduler'] = field(default_factory=list)
@@ -1411,6 +1859,12 @@ class Task:
         if self.duration < 0:
             raise ValueError(f"Duration cannot be negative. Got {self.duration} minutes")
         # Note: duration of 0 is allowed (unscheduled task), but will be set to positive value later
+
+        # Resolve priority: -1 sentinel means "use the default for this task type".
+        if self.priority == -1:
+            self.priority = DEFAULT_TASK_PRIORITY.get(self.taskCode, 0)
+        elif not (0 <= self.priority <= 3):
+            raise ValueError(f"Invalid priority {self.priority}. Must be between 0-3")
 
     def getTaskID(self) -> int:
         """Return the unique task ID."""
@@ -1438,6 +1892,30 @@ class Task:
             raise ValueError(f"Invalid taskCode {task_code}. Must be between 0-3 (0=Walk, 1=Feed, 2=Nap, 3=Vet)")
         self.taskCode = task_code
 
+    def getPriority(self) -> int:
+        """Return the task's priority (0-3, higher = more urgent)."""
+        return self.priority
+
+    def setPriority(self, priority: int) -> None:
+        """
+        Set the task's priority (0-3, higher = more urgent).
+        Raises ValueError if outside the valid range.
+        """
+        if not (0 <= priority <= 3):
+            raise ValueError(f"Invalid priority {priority}. Must be between 0-3")
+        self.priority = priority
+
+    def isDailyTask(self) -> bool:
+        """Return whether this task is a daily recurring task."""
+        return self.isDaily
+
+    def setDaily(self, is_daily: bool) -> None:
+        """
+        Mark this task as daily (True) or one-off (False). A daily task
+        automatically re-creates itself for the next day when completed.
+        """
+        self.isDaily = bool(is_daily)
+
     def isTaskCompleted(self) -> bool:
         """Return whether this task has been completed."""
         return self.completed
@@ -1455,13 +1933,50 @@ class Task:
         """Return the duration of the task in minutes."""
         return self.duration
 
-    def doTask(self) -> None:
+    def doTask(self) -> Optional['Task']:
         """
         Mark the task as completed and record the completion timestamp.
         Updates completed flag to True and sets completed_at to current time.
+
+        DAILY TASKS: if this task is flagged daily (isDaily), completing it for
+        the first time automatically spawns a fresh Task instance for the next
+        day (see _spawnNextOccurrence). Returns that new Task, or None otherwise.
+        The "first time" guard prevents a second doTask() call from spawning a
+        duplicate occurrence.
         """
+        was_completed = self.completed
         self.completed = True
         self.completed_at = datetime.now()
+
+        if self.isDaily and not was_completed:
+            return self._spawnNextOccurrence()
+        return None
+
+    def _spawnNextOccurrence(self) -> 'Task':
+        """
+        Create the next daily occurrence of this task: a new Task with the same
+        pet, type, duration, priority, and daily flag, added to the pet's task
+        list. Each of this task's scheduled times is re-created one day later so
+        the routine rolls forward automatically.
+        """
+        from datetime import date as _date, timedelta
+
+        next_task = Task(
+            pet=self.pet,
+            taskCode=self.taskCode,
+            duration=self.duration,
+            priority=self.priority,
+            isDaily=True,
+        )
+        # Attach to the pet so it shows up as a pending task for tomorrow.
+        self.pet.addPetTask(next_task)
+
+        # Re-schedule every occurrence of this task one calendar day forward.
+        for sched in self.getSchedulerList():
+            next_day = _date(sched.year, sched.month, sched.date) + timedelta(days=1)
+            newScheduler(next_task, next_day.year, next_day.month, next_day.day, sched.getTime())
+
+        return next_task
 
     def getCompletedAt(self) -> Optional[datetime]:
         """
@@ -1698,6 +2213,35 @@ class Scheduler:
     def getTaskDuration(self) -> int:
         """Return the duration of the scheduled task in minutes."""
         return self.task.getTaskDuration() if self.task else 0
+
+    def getStartMinutes(self) -> int:
+        """Return the schedule's start time as minutes since midnight (0 if unset)."""
+        return timeToMinutes(self.time) if self.time else 0
+
+    def getEndMinutes(self) -> int:
+        """Return the schedule's end time (start + duration) as minutes since midnight."""
+        return self.getStartMinutes() + self.getTaskDuration()
+
+    def getEndTime(self) -> str:
+        """Return the schedule's end time as an "HH:MM" string."""
+        return minutesToTime(self.getEndMinutes())
+
+    def isSameDate(self, other: 'Scheduler') -> bool:
+        """Return True if this schedule falls on the same calendar day as other."""
+        return (self.year == other.year and
+                self.month == other.month and
+                self.date == other.date)
+
+    def overlaps(self, other: 'Scheduler') -> bool:
+        """
+        Return True if this schedule's time interval overlaps other's on the same
+        day (#1). Uses duration-aware intervals, so a 60-min task at 09:00 conflicts
+        with anything starting before 10:00 -- not just an exact time match.
+        """
+        if self is other or not self.isSameDate(other):
+            return False
+        return (self.getStartMinutes() < other.getEndMinutes() and
+                other.getStartMinutes() < self.getEndMinutes())
 
     def isScheduleInPast(self) -> bool:
         """

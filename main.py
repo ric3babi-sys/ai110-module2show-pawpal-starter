@@ -47,7 +47,10 @@ from pawpal_system import (
     removeScheduler,
     getSchedulerCount,
     getSchedulesByDateRange,
-    getSchedulerStatistics
+    getSchedulerStatistics,
+    sortSchedulesByTime,
+    filterSchedules,
+    checkScheduleConflict,
 )
 
 __all__ = [
@@ -93,6 +96,9 @@ __all__ = [
     'getSchedulerCount',
     'getSchedulesByDateRange',
     'getSchedulerStatistics',
+    'sortSchedulesByTime',
+    'filterSchedules',
+    'checkScheduleConflict',
 ]
 
 
@@ -217,6 +223,139 @@ def main():
             print(f"  {idx}. [{time}] {pet_name} - {task_type} ({duration} min)")
     else:
         print("\nNo activities scheduled for today.")
+
+    # =====================================================================
+    # Sort Scheduler By Time
+    # ---------------------------------------------------------------------
+    # Create several tasks for a NEW pet, all on the SAME day but deliberately
+    # added OUT OF chronological order, then sort them with the global
+    # sortSchedulesByTime() helper to prove it orders by time regardless of
+    # the order the schedules were created in.
+    # =====================================================================
+    print("\n" + "=" * 70)
+    print("SORT SCHEDULER BY TIME")
+    print("=" * 70)
+
+    # Dedicated pet so this demo is independent of the schedules created above.
+    demo_pet = newPet("Ziggy", owner)
+
+    # A single target day for every task in this demo.
+    demo_year = datetime.now().year
+    demo_month = datetime.now().month
+    demo_day = datetime.now().day
+
+    # (taskCode, duration, time) pairs added out of time order on purpose:
+    # 15:45 first, then 07:15, 20:00, 06:30, 11:00.
+    unsorted_entries = [
+        (0, 30, "15:45"),  # Walk
+        (1, 15, "07:15"),  # Feed
+        (2, 60, "20:00"),  # Nap
+        (3, 45, "06:30"),  # Vet Visit
+        (1, 15, "11:00"),  # Feed
+    ]
+
+    demo_schedulers = []
+    for task_code, duration, time in unsorted_entries:
+        task = Task(pet=demo_pet, taskCode=task_code)
+        task.setTaskDuration(duration)
+        scheduler = newScheduler(task, demo_year, demo_month, demo_day, time)
+        demo_schedulers.append(scheduler)
+
+    print(f"\nCreated {len(demo_schedulers)} tasks for {demo_pet.getPetName()} "
+          f"on {demo_year:04d}-{demo_month:02d}-{demo_day:02d} (out of order):")
+    for scheduler in demo_schedulers:
+        print(f"  • [{scheduler.getTime()}] {scheduler.getTaskType()} "
+              f"({scheduler.getTaskDuration()} min)")
+
+    # Sort the schedules chronologically using the global helper.
+    sorted_demo = sortSchedulesByTime(demo_schedulers)
+
+    print("\nAfter sortSchedulesByTime() (chronological):")
+    for idx, scheduler in enumerate(sorted_demo, 1):
+        print(f"  {idx}. [{scheduler.getTime()}] {scheduler.getTaskType()} "
+              f"({scheduler.getTaskDuration()} min)")
+
+    # =====================================================================
+    # Sorting and Filtering
+    # ---------------------------------------------------------------------
+    # Example A: filter the system's schedules down to a single pet (by name)
+    #            and display all of that pet's scheduled tasks.
+    # Example B: sort those filtered schedules chronologically (across days)
+    #            using the global sortSchedulesByTime() helper.
+    # =====================================================================
+    print("\n" + "=" * 70)
+    print("SORTING AND FILTERING")
+    print("=" * 70)
+
+    # --- Example A: filter by pet name ---
+    target_name = "Fluffy"
+    target_pet = getPetByName(target_name)
+    # filterSchedules(pet=...) narrows every scheduler in the system to one pet.
+    pet_schedules = filterSchedules(getAllSchedulers(), pet=target_pet) if target_pet else []
+
+    print(f"\n[A] All scheduled tasks for '{target_name}':")
+    if not target_pet:
+        print(f"    No pet named '{target_name}' found.")
+    elif not pet_schedules:
+        print(f"    {target_name} has no scheduled tasks.")
+    else:
+        print(f"    Found {len(pet_schedules)} scheduled task(s).")
+        for scheduler in pet_schedules:
+            print(f"      • {scheduler.getDateString()} [{scheduler.getTime()}] "
+                  f"{scheduler.getTaskType()} ({scheduler.getTaskDuration()} min)")
+
+    # --- Example B: sort the filtered schedules by time (global helper) ---
+    print(f"\n[B] '{target_name}' schedule sorted by time (sortSchedulesByTime):")
+    if pet_schedules:
+        sorted_pet_schedules = sortSchedulesByTime(pet_schedules)
+        for idx, scheduler in enumerate(sorted_pet_schedules, 1):
+            print(f"    {idx}. {scheduler.getDateString()} [{scheduler.getTime()}] "
+                  f"{scheduler.getTaskType()} ({scheduler.getTaskDuration()} min)")
+    else:
+        print("    Nothing to sort.")
+
+    # =====================================================================
+    # Conflict Detection (lightweight, non-fatal)
+    # ---------------------------------------------------------------------
+    # Schedule two tasks at the SAME date and time. newScheduler() runs a
+    # lightweight conflict check and PRINTS a warning (it does not crash), and
+    # checkScheduleConflict() can be called directly to get the warning message.
+    # =====================================================================
+    print("\n" + "=" * 70)
+    print("CONFLICT DETECTION")
+    print("=" * 70)
+
+    conflict_year = datetime.now().year
+    conflict_month = datetime.now().month
+    conflict_day = datetime.now().day
+    conflict_time = "18:30"
+
+    print(f"\nScheduling two tasks at {conflict_year:04d}-{conflict_month:02d}-"
+          f"{conflict_day:02d} {conflict_time} ...")
+
+    # Task 1: Fluffy - Feed at 18:30 (first booking, no conflict yet)
+    clash_task_1 = Task(pet=pet1, taskCode=1)  # Feed
+    clash_task_1.setTaskDuration(15)
+    print(f"  → Booking {pet1.getPetName()}'s Feed:")
+    newScheduler(clash_task_1, conflict_year, conflict_month, conflict_day, conflict_time)
+
+    # Task 2: Buddy - Walk at the SAME time (different pet, same slot -> conflict)
+    clash_task_2 = Task(pet=pet2, taskCode=0)  # Walk
+    clash_task_2.setTaskDuration(30)
+    print(f"  → Booking {pet2.getPetName()}'s Walk (same slot):")
+    newScheduler(clash_task_2, conflict_year, conflict_month, conflict_day, conflict_time)
+
+    # Direct use of the detection strategy: returns the warning message (or None).
+    print("\nDirect checkScheduleConflict() call for that slot:")
+    message = checkScheduleConflict(conflict_year, conflict_month, conflict_day, conflict_time)
+    if message:
+        print(f"  {message}")
+    else:
+        print("  No conflict detected.")
+
+    # Verify a free slot returns no warning.
+    free_message = checkScheduleConflict(conflict_year, conflict_month, conflict_day, "23:15")
+    print(f"  Free slot (23:15) -> {'conflict' if free_message else 'no conflict (as expected)'}")
 
     # Display Scheduler Statistics
     print("\n[9] Scheduler Statistics:")
