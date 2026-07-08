@@ -215,6 +215,15 @@ tests/test_pawpal.py ...................                                        
 | Conflict handling |checkScheduleConflict   | is checked when running newScheduler               |
 | Recurring tasks   |scheduleRecurring       | creates number of schedule slots for one task      |
 
+## Testing PawPal+
+Test for Task.doTask() method and completion status.
+Test for Pet task management and counting.
+Test for Task initialization and validation.
+Test for verifying schedules and tasks come back in chronological order.
+Test for daily recurring tasks: completing one spawns the next day's.
+Test for the Scheduler's duplicate/conflicting time flagging.
+Test for duration-aware overlap detection (detectConflicts/hasConflicts).
+
 ## 📸 Demo Walkthrough
 
 Describe your app in numbered steps so a reader can follow along without watching a video:

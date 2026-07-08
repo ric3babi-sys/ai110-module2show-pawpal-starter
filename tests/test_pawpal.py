@@ -14,6 +14,8 @@ import pytest
 from pawpal_system import (
     Owner, Pet, Task, Scheduler,
     newOwner, newPet, newScheduler,
+    sortSchedulesByTime, sortTasksByScheduledTime,
+    checkScheduleConflict, detectConflicts, hasConflicts,
     clearAllData, ownerList, petList, schedulerDictionary
 )
 
@@ -358,6 +360,424 @@ class TestTaskInitialization:
 
         with pytest.raises(ValueError):
             task.setTaskDuration(-30)  # Negative duration
+
+
+class TestChronologicalOrder:
+    """Test suite verifying schedules and tasks come back in chronological order."""
+
+    def setup_method(self):
+        """Set up test fixtures before each test."""
+        clearAllData()
+        ownerList.clear()
+        petList.clear()
+        schedulerDictionary.clear()
+
+    def _make_task(self, task_code=0, duration=30):
+        """Create a pet + task with a positive duration, ready to be scheduled."""
+        owner = newOwner("Test Owner")
+        pet = newPet("Test Pet", owner)
+        task = Task(pet=pet, taskCode=task_code)
+        task.setTaskDuration(duration)
+        return task
+
+    def test_schedules_sorted_by_time_within_same_day(self):
+        """Schedules on one day should come back earliest-time-first."""
+        task = self._make_task()
+        # Add out of order: noon, morning, evening.
+        s_noon = newScheduler(task, 2026, 7, 6, "12:00")
+        s_morning = newScheduler(task, 2026, 7, 6, "09:00")
+        s_evening = newScheduler(task, 2026, 7, 6, "17:30")
+
+        ordered = sortSchedulesByTime([s_noon, s_morning, s_evening])
+
+        assert [s.getTime() for s in ordered] == ["09:00", "12:00", "17:30"], \
+            "Same-day schedules should be ordered by ascending time"
+
+    def test_schedules_sorted_across_multiple_days(self):
+        """Chronological order should span year, month, and day, not just time."""
+        task = self._make_task()
+        # Add newest first so a stable/no-op sort would fail the assertion.
+        s_july = newScheduler(task, 2026, 7, 6, "08:00")
+        s_dec = newScheduler(task, 2025, 12, 31, "23:00")
+        s_jan = newScheduler(task, 2026, 1, 1, "06:00")
+
+        ordered = sortSchedulesByTime([s_july, s_dec, s_jan])
+
+        assert [s.getDateString() for s in ordered] == [
+            "2025-12-31", "2026-01-01", "2026-07-06"
+        ], "Schedules should be ordered chronologically across days/months/years"
+
+    def test_schedules_sorted_numerically_not_lexically(self):
+        """Times must sort as minutes, so 09:00 precedes 10:00 (not a string compare)."""
+        task = self._make_task()
+        s_ten = newScheduler(task, 2026, 7, 6, "10:00")
+        s_nine = newScheduler(task, 2026, 7, 6, "09:00")
+
+        ordered = sortSchedulesByTime([s_ten, s_nine])
+
+        assert [s.getTime() for s in ordered] == ["09:00", "10:00"], \
+            "09:00 should sort before 10:00"
+
+    def test_schedules_descending_order(self):
+        """descending=True should return most-recent-first (history view)."""
+        task = self._make_task()
+        s_morning = newScheduler(task, 2026, 7, 6, "09:00")
+        s_evening = newScheduler(task, 2026, 7, 6, "17:30")
+
+        ordered = sortSchedulesByTime([s_morning, s_evening], descending=True)
+
+        assert [s.getTime() for s in ordered] == ["17:30", "09:00"], \
+            "Descending sort should return latest schedule first"
+
+    def test_sort_empty_schedule_list(self):
+        """Sorting an empty list should return an empty list, not raise."""
+        assert sortSchedulesByTime([]) == []
+
+    def test_tasks_sorted_by_earliest_scheduled_time(self):
+        """Tasks should be ordered by their earliest scheduled occurrence."""
+        owner = newOwner("Owner")
+        pet = newPet("Pet", owner)
+
+        early_task = Task(pet=pet, taskCode=0)
+        early_task.setTaskDuration(30)
+        late_task = Task(pet=pet, taskCode=1)
+        late_task.setTaskDuration(30)
+
+        # late_task is scheduled later in the day than early_task.
+        newScheduler(late_task, 2026, 7, 6, "15:00")
+        newScheduler(early_task, 2026, 7, 6, "08:00")
+
+        ordered = sortTasksByScheduledTime([late_task, early_task])
+
+        assert ordered == [early_task, late_task], \
+            "Tasks should be ordered by earliest scheduled time"
+
+    def test_tasks_keyed_on_earliest_of_multiple_schedules(self):
+        """A task with several schedules is ordered by its EARLIEST occurrence."""
+        owner = newOwner("Owner")
+        pet = newPet("Pet", owner)
+
+        task_a = Task(pet=pet, taskCode=0)
+        task_a.setTaskDuration(30)
+        task_b = Task(pet=pet, taskCode=1)
+        task_b.setTaskDuration(30)
+
+        # task_a's earliest is 07:00 even though it also has a late slot.
+        newScheduler(task_a, 2026, 7, 6, "20:00")
+        newScheduler(task_a, 2026, 7, 6, "07:00")
+        newScheduler(task_b, 2026, 7, 6, "09:00")
+
+        ordered = sortTasksByScheduledTime([task_b, task_a])
+
+        assert ordered == [task_a, task_b], \
+            "Task should be ranked by its earliest schedule (07:00 < 09:00)"
+
+    def test_unscheduled_tasks_sorted_last(self):
+        """Tasks with no schedule are appended after scheduled ones, both directions."""
+        owner = newOwner("Owner")
+        pet = newPet("Pet", owner)
+
+        scheduled = Task(pet=pet, taskCode=0)
+        scheduled.setTaskDuration(30)
+        newScheduler(scheduled, 2026, 7, 6, "09:00")
+
+        unscheduled = Task(pet=pet, taskCode=1)  # never scheduled
+
+        ascending = sortTasksByScheduledTime([unscheduled, scheduled])
+        assert ascending == [scheduled, unscheduled], \
+            "Unscheduled task should come last in ascending order"
+
+        descending = sortTasksByScheduledTime([unscheduled, scheduled], descending=True)
+        assert descending[-1] == unscheduled, \
+            "Unscheduled task should still come last in descending order"
+
+
+class TestDailyRecurrence:
+    """Test suite for daily recurring tasks: completing one spawns the next day's."""
+
+    def setup_method(self):
+        """Set up test fixtures before each test."""
+        clearAllData()
+        ownerList.clear()
+        petList.clear()
+        schedulerDictionary.clear()
+
+    def _make_daily_task(self, year=2026, month=7, date=6, time="09:00", duration=30):
+        """Create a pet with a scheduled daily task ready to complete."""
+        owner = newOwner("Owner")
+        pet = newPet("Pet", owner)
+        task = Task(pet=pet, taskCode=0, duration=duration, isDaily=True)
+        pet.addPetTask(task)
+        newScheduler(task, year, month, date, time)
+        return pet, task
+
+    def test_completing_daily_task_returns_new_task(self):
+        """doTask() on a daily task returns the freshly spawned next occurrence."""
+        pet, task = self._make_daily_task()
+
+        next_task = task.doTask()
+
+        assert next_task is not None, "Completing a daily task should return a new Task"
+        assert isinstance(next_task, Task), "Spawned occurrence should be a Task"
+        assert next_task is not task, "Spawned occurrence should be a distinct object"
+
+    def test_new_task_scheduled_for_following_day(self):
+        """The spawned task is scheduled one calendar day later at the same time."""
+        pet, task = self._make_daily_task(2026, 7, 6, "09:00")
+
+        next_task = task.doTask()
+        schedules = next_task.getSchedulerList()
+
+        assert len(schedules) == 1, "Spawned task should have exactly one schedule"
+        sched = schedules[0]
+        assert (sched.year, sched.month, sched.date) == (2026, 7, 7), \
+            "Spawned schedule should be the following day"
+        assert sched.getTime() == "09:00", "Spawned schedule should keep the same time"
+
+    def test_new_task_added_to_pet_and_pending(self):
+        """The next occurrence is attached to the pet and starts incomplete."""
+        pet, task = self._make_daily_task()
+
+        next_task = task.doTask()
+
+        assert next_task in pet.getPetTaskList(), \
+            "Spawned task should be added to the pet's task list"
+        assert next_task.isTaskCompleted() is False, \
+            "Spawned task should start as pending"
+        assert pet.getTaskCount() == 2, "Pet should now have original + spawned task"
+
+    def test_new_task_inherits_attributes(self):
+        """The spawned task copies type, duration, priority, and daily flag."""
+        pet, task = self._make_daily_task(duration=45)
+
+        next_task = task.doTask()
+
+        assert next_task.getTaskCode() == task.getTaskCode(), "Task type should carry over"
+        assert next_task.getTaskDuration() == task.getTaskDuration(), \
+            "Duration should carry over"
+        assert next_task.getPriority() == task.getPriority(), "Priority should carry over"
+        assert next_task.isDailyTask() is True, "Spawned task should remain daily"
+
+    def test_non_daily_task_does_not_spawn(self):
+        """Completing a one-off task returns None and adds no new task."""
+        owner = newOwner("Owner")
+        pet = newPet("Pet", owner)
+        task = Task(pet=pet, taskCode=0, duration=30, isDaily=False)
+        pet.addPetTask(task)
+        newScheduler(task, 2026, 7, 6, "09:00")
+
+        result = task.doTask()
+
+        assert result is None, "A non-daily task should not spawn a new occurrence"
+        assert pet.getTaskCount() == 1, "No extra task should be created"
+
+    def test_completing_twice_does_not_spawn_duplicate(self):
+        """The 'first completion' guard stops a second doTask() from spawning again."""
+        pet, task = self._make_daily_task()
+
+        first = task.doTask()
+        second = task.doTask()
+
+        assert first is not None, "First completion should spawn a task"
+        assert second is None, "Second completion should not spawn a duplicate"
+        assert pet.getTaskCount() == 2, \
+            "Only one occurrence should be spawned despite two doTask() calls"
+
+    def test_recurrence_rolls_over_month_boundary(self):
+        """Completing a daily task on the last of the month rolls to the 1st of the next."""
+        pet, task = self._make_daily_task(2026, 7, 31, "08:00")
+
+        next_task = task.doTask()
+        sched = next_task.getSchedulerList()[0]
+
+        assert (sched.year, sched.month, sched.date) == (2026, 8, 1), \
+            "July 31 daily task should roll over to August 1"
+
+    def test_recurrence_chains_forward(self):
+        """Completing each spawned occurrence keeps rolling the routine forward."""
+        pet, task = self._make_daily_task(2026, 7, 6, "09:00")
+
+        day2 = task.doTask()
+        day3 = day2.doTask()
+        sched = day3.getSchedulerList()[0]
+
+        assert (sched.year, sched.month, sched.date) == (2026, 7, 8), \
+            "Chained completions should advance the schedule one day at a time"
+        assert pet.getTaskCount() == 3, "Each completion should add one occurrence"
+
+
+class TestDuplicateTimeDetection:
+    """Test suite for the Scheduler's duplicate/conflicting time flagging."""
+
+    def setup_method(self):
+        """Set up test fixtures before each test."""
+        clearAllData()
+        ownerList.clear()
+        petList.clear()
+        schedulerDictionary.clear()
+
+    def _make_task(self, task_code=0, duration=30, pet_name="Pet"):
+        """Create a pet + scheduled-ready task."""
+        owner = newOwner("Owner")
+        pet = newPet(pet_name, owner)
+        task = Task(pet=pet, taskCode=task_code, duration=duration)
+        pet.addPetTask(task)
+        return task
+
+    def test_free_slot_returns_no_warning(self):
+        """An empty slot should not be flagged as a conflict."""
+        assert checkScheduleConflict(2026, 7, 6, "09:00") is None, \
+            "A date/time with no bookings should return None"
+
+    def test_duplicate_time_is_flagged(self):
+        """A second booking at the same date and time should be flagged."""
+        task = self._make_task()
+        newScheduler(task, 2026, 7, 6, "09:00")
+
+        warning = checkScheduleConflict(2026, 7, 6, "09:00")
+
+        assert warning is not None, "Duplicate date+time should produce a warning"
+        assert "conflict" in warning.lower(), "Warning should mention a conflict"
+
+    def test_duplicate_time_flags_across_different_pets(self):
+        """A clash between two different pets at the same slot is still flagged."""
+        task_a = self._make_task(pet_name="Rex")
+        newScheduler(task_a, 2026, 7, 6, "09:00")
+
+        task_b = self._make_task(pet_name="Milo")
+        warning = checkScheduleConflict(2026, 7, 6, "09:00")
+
+        assert warning is not None, "Overlapping slot for another pet should be flagged"
+        assert "Rex" in warning, "Warning should name the already-booked pet"
+
+    def test_different_time_same_day_not_flagged(self):
+        """Different times on the same day should not conflict."""
+        task = self._make_task()
+        newScheduler(task, 2026, 7, 6, "09:00")
+
+        assert checkScheduleConflict(2026, 7, 6, "10:30") is None, \
+            "A different time on the same day should not be flagged"
+
+    def test_same_time_different_day_not_flagged(self):
+        """The same time on a different day should not conflict."""
+        task = self._make_task()
+        newScheduler(task, 2026, 7, 6, "09:00")
+
+        assert checkScheduleConflict(2026, 7, 7, "09:00") is None, \
+            "The same time on a different day should not be flagged"
+
+    def test_ignore_excludes_self_from_conflict(self):
+        """A scheduler should not report a conflict with itself via ignore."""
+        task = self._make_task()
+        sched = newScheduler(task, 2026, 7, 6, "09:00")
+
+        # Only this one scheduler exists, so ignoring it clears the slot.
+        assert checkScheduleConflict(2026, 7, 6, "09:00", ignore=sched) is None, \
+            "Ignoring the only booking should report no conflict"
+
+    def test_newScheduler_prints_warning_on_duplicate(self, capsys):
+        """Creating a second schedule at a taken slot prints a non-fatal warning."""
+        task = self._make_task()
+        newScheduler(task, 2026, 7, 6, "09:00")
+        capsys.readouterr()  # clear any output from the first (conflict-free) create
+
+        second = newScheduler(task, 2026, 7, 6, "09:00")
+        captured = capsys.readouterr()
+
+        assert "conflict" in captured.out.lower(), \
+            "newScheduler should print a conflict warning for a duplicate slot"
+        # Non-fatal: the schedule is still created despite the clash.
+        assert second in schedulerDictionary["20260706"], \
+            "The duplicate schedule should still be created (warning is non-fatal)"
+
+
+class TestOverlapDetection:
+    """Test suite for duration-aware overlap detection (detectConflicts/hasConflicts)."""
+
+    def setup_method(self):
+        """Set up test fixtures before each test."""
+        clearAllData()
+        ownerList.clear()
+        petList.clear()
+        schedulerDictionary.clear()
+
+    def _schedule(self, year, month, date, time, duration=30,
+                  task_code=0, pet_name="Pet"):
+        """Create a scheduled task and return its Scheduler."""
+        owner = newOwner("Owner")
+        pet = newPet(pet_name, owner)
+        task = Task(pet=pet, taskCode=task_code, duration=duration)
+        pet.addPetTask(task)
+        return newScheduler(task, year, month, date, time)
+
+    def test_overlapping_intervals_are_detected(self):
+        """A 60-min task at 09:00 overlaps a task starting at 09:30."""
+        s1 = self._schedule(2026, 7, 6, "09:00", duration=60, pet_name="Rex")
+        s2 = self._schedule(2026, 7, 6, "09:30", duration=30, pet_name="Milo")
+
+        conflicts = detectConflicts([s1, s2])
+
+        assert len(conflicts) == 1, "Overlapping intervals should produce one conflict"
+        pair = conflicts[0]
+        assert s1 in pair and s2 in pair, "Conflict should reference both schedules"
+        assert hasConflicts([s1, s2]) is True, "hasConflicts should report True"
+
+    def test_non_overlapping_intervals_have_no_conflict(self):
+        """Back-to-back tasks with a gap should not conflict."""
+        s1 = self._schedule(2026, 7, 6, "09:00", duration=30, pet_name="Rex")
+        s2 = self._schedule(2026, 7, 6, "10:00", duration=30, pet_name="Milo")
+
+        assert detectConflicts([s1, s2]) == [], "Separated intervals should not conflict"
+        assert hasConflicts([s1, s2]) is False, "hasConflicts should report False"
+
+    def test_adjacent_intervals_do_not_conflict(self):
+        """When one task ends exactly as the next begins, there is no overlap."""
+        s1 = self._schedule(2026, 7, 6, "09:00", duration=60, pet_name="Rex")  # ends 10:00
+        s2 = self._schedule(2026, 7, 6, "10:00", duration=30, pet_name="Milo")  # starts 10:00
+
+        assert detectConflicts([s1, s2]) == [], \
+            "Touching-but-not-overlapping intervals should not conflict"
+
+    def test_conflicts_only_within_same_day(self):
+        """Identical times on different days must not be treated as overlapping."""
+        s1 = self._schedule(2026, 7, 6, "09:00", duration=60, pet_name="Rex")
+        s2 = self._schedule(2026, 7, 7, "09:00", duration=60, pet_name="Milo")
+
+        assert detectConflicts([s1, s2]) == [], \
+            "Overlap check must be scoped to a single calendar day"
+
+    def test_multiple_overlaps_all_reported(self):
+        """Three mutually overlapping tasks should yield all three pair conflicts."""
+        s1 = self._schedule(2026, 7, 6, "09:00", duration=90, pet_name="A")  # 09:00-10:30
+        s2 = self._schedule(2026, 7, 6, "09:30", duration=60, pet_name="B")  # 09:30-10:30
+        s3 = self._schedule(2026, 7, 6, "10:00", duration=30, pet_name="C")  # 10:00-10:30
+
+        conflicts = detectConflicts([s1, s2, s3])
+
+        # Pairs: (s1,s2), (s1,s3), (s2,s3)
+        assert len(conflicts) == 3, "All three overlapping pairs should be reported"
+
+    def test_zero_duration_task_never_overlaps(self):
+        """A zero-length task shares no interval, so it cannot overlap another."""
+        # Build the zero-duration schedule directly (setTaskDuration rejects 0).
+        owner = newOwner("Owner")
+        pet = newPet("Rex", owner)
+        zero_task = Task(pet=pet, taskCode=0)  # duration defaults to 0
+        pet.addPetTask(zero_task)
+        s_zero = newScheduler(zero_task, 2026, 7, 6, "09:00")
+
+        s_other = self._schedule(2026, 7, 6, "09:00", duration=60, pet_name="Milo")
+
+        # The zero-length interval [09:00, 09:00) overlaps nothing.
+        assert (s_zero, s_other) not in detectConflicts([s_zero, s_other]) and \
+               (s_other, s_zero) not in detectConflicts([s_zero, s_other]), \
+            "A zero-duration task should not register as an overlap"
+
+    def test_empty_and_single_schedule_have_no_conflicts(self):
+        """Degenerate inputs should return no conflicts, not raise."""
+        assert detectConflicts([]) == [], "Empty input should yield no conflicts"
+        s1 = self._schedule(2026, 7, 6, "09:00")
+        assert detectConflicts([s1]) == [], "A single schedule cannot conflict"
 
 
 if __name__ == "__main__":
