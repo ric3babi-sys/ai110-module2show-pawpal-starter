@@ -1,4 +1,5 @@
 import streamlit as st
+import pandas as pd
 from datetime import datetime
 
 # Import PawPal+ system classes and functions
@@ -50,8 +51,10 @@ from pawpal_system import (
     DEFAULT_TASK_PRIORITY,
     # Target Features: sorting, filtering, recurring, conflict detection
     sortSchedulesByTime,
+    sortTasksByScheduledTime,
     filterSchedules,
     isRecurringTask,
+    getRecurringSchedules,
     detectConflicts,
     hasConflicts,
 )
@@ -314,24 +317,63 @@ if st.session_state.petList:
 
     # Display tasks for selected pet
     if selected_pet.getPetTaskList():
-        st.write(f"**{selected_pet_name}'s Tasks ({selected_pet.getTaskCount()}):**")
-        for task in selected_pet.getPetTaskList():
-            col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
-            with col1:
-                # Badge daily tasks and recurring tasks (more than one occurrence).
-                badge = ""
-                if task.isDailyTask():
-                    badge = " 🔁 daily"
-                elif isRecurringTask(task):
-                    badge = " 🔁"
-                st.write(f"  • {task.getTaskDescription()}{badge}")
-            with col2:
-                st.write(f"Duration: {task.getTaskDuration()} min")
-            with col3:
-                st.write(f"Priority: {PRIORITY_LABELS[task.getPriority()]}")
-            with col4:
-                status = "✓ Completed" if task.isTaskCompleted() else "⏳ Pending"
-                st.write(status)
+        st.markdown(f"#### 🐾 {selected_pet_name}'s Tasks")
+
+        # Order tasks by their earliest scheduled time (Target Feature);
+        # unscheduled tasks fall to the end.
+        ordered_tasks = sortTasksByScheduledTime(selected_pet.getPetTaskList())
+
+        # Collect schedule IDs involved in a time overlap so we can flag those rows (#1).
+        # (Scheduler is a mutable dataclass and therefore unhashable, so key on its ID.)
+        conflicting_schedules = set()
+        for s1, s2 in selected_pet.findConflictingSchedules():
+            conflicting_schedules.add(s1.getSchedulerID())
+            conflicting_schedules.add(s2.getSchedulerID())
+
+        # Build one row per task for a clean, professional table view.
+        task_rows = []
+        for task in ordered_tasks:
+            # Badge daily tasks and recurring tasks (more than one occurrence).
+            if task.isDailyTask():
+                repeat = "🔁 daily"
+            elif isRecurringTask(task):
+                repeat = f"🔁 ×{task.getScheduleCount()}"
+            else:
+                repeat = "—"
+
+            # Derive the scheduled window from the earliest occurrence.
+            task_schedules = task.getSchedulerList()
+            if task_schedules:
+                earliest = sortSchedulesByTime(task_schedules)[0]
+                when = f"{earliest.getDateString()} {earliest.getTime()}"
+                if isRecurringTask(task):
+                    when += f" → {getRecurringSchedules(task)[-1].getDateString()}"
+            else:
+                when = "Not scheduled"
+
+            # Flag the task if any of its schedules overlaps another (#1).
+            in_conflict = any(s.getSchedulerID() in conflicting_schedules
+                              for s in task.getSchedulerList())
+
+            task_rows.append({
+                "Task": task.getTaskDescription(),
+                "When": when,
+                "Duration": f"{task.getTaskDuration()} min",
+                "Priority": PRIORITY_LABELS[task.getPriority()],
+                "Repeat": repeat,
+                "Status": "✅ Completed" if task.isTaskCompleted() else "⏳ Pending",
+                "Alert": "⚠️ overlap" if in_conflict else "",
+            })
+
+        st.table(pd.DataFrame(task_rows))
+
+        # Summarize completion status with an at-a-glance banner.
+        pending = selected_pet.getPendingTaskCount()
+        total = selected_pet.getTaskCount()
+        if pending == 0:
+            st.success(f"🎉 All {total} of {selected_pet_name}'s tasks are complete!")
+        else:
+            st.info(f"⏳ {pending} of {total} task(s) still pending for {selected_pet_name}.")
     else:
         st.info(f"No tasks yet for {selected_pet_name}.")
 
@@ -350,19 +392,34 @@ if st.session_state.petList:
                 day_end=f"{day_end.hour:02d}:{day_end.minute:02d}",
             )
             if plan["planned"]:
-                st.write(f"**Suggested order ({plan['total_minutes']} min of care):**")
-                for item in plan["planned"]:
-                    task = item["task"]
-                    st.write(f"`{item['start']}–{item['end']}` — {task.getPet().getPetName()}: "
-                             f"{task.getTaskDescription()} ({PRIORITY_LABELS[task.getPriority()]})")
+                st.success(f"✅ Planned {len(plan['planned'])} task(s) — "
+                           f"{plan['total_minutes']} min of care.")
+                plan_rows = [
+                    {
+                        "Time": f"{item['start']}–{item['end']}",
+                        "Pet": item["task"].getPet().getPetName(),
+                        "Task": item["task"].getTaskDescription(),
+                        "Priority": PRIORITY_LABELS[item["task"].getPriority()],
+                        "Duration": f"{item['duration']} min",
+                    }
+                    for item in plan["planned"]
+                ]
+                st.table(pd.DataFrame(plan_rows))
             else:
                 st.info("No pending tasks with a duration to plan.")
 
             if plan["unplaced"]:
-                st.warning(f"{len(plan['unplaced'])} task(s) didn't fit in the window:")
-                for task in plan["unplaced"]:
-                    st.write(f"  • {task.getPet().getPetName()}: {task.getTaskDescription()} "
-                             f"({task.getTaskDuration()} min)")
+                st.warning(f"⚠️ {len(plan['unplaced'])} task(s) didn't fit in the window:")
+                unplaced_rows = [
+                    {
+                        "Pet": task.getPet().getPetName(),
+                        "Task": task.getTaskDescription(),
+                        "Duration": f"{task.getTaskDuration()} min",
+                        "Priority": PRIORITY_LABELS[task.getPriority()],
+                    }
+                    for task in plan["unplaced"]
+                ]
+                st.table(pd.DataFrame(unplaced_rows))
 
 else:
     st.info("Add a pet first to create and schedule tasks.")
@@ -395,6 +452,12 @@ if today_schedule:
 
     # Conflict banner: flag overlapping schedules anywhere in today's plan.
     todays_conflicts = detectConflicts(today_schedule)
+    # Flatten the conflicting pairs into a set of IDs so we can mark individual rows
+    # below (Scheduler is a mutable dataclass and therefore unhashable).
+    conflicting_today = set()
+    for s1, s2 in todays_conflicts:
+        conflicting_today.add(s1.getSchedulerID())
+        conflicting_today.add(s2.getSchedulerID())
     if todays_conflicts:
         st.warning(f"⚠️ {len(todays_conflicts)} overlapping schedule(s) today. "
                    "Overlapping tasks share a time window.")
@@ -423,28 +486,22 @@ if today_schedule:
 
     if not sorted_schedule:
         st.info("No scheduled tasks match the current filter.")
-
-    # Display each scheduled task
-    col1, col2, col3, col4 = st.columns([1.5, 2, 1.5, 1.5])
-    with col1:
-        st.write("**Time**")
-    with col2:
-        st.write("**Pet**")
-    with col3:
-        st.write("**Task**")
-    with col4:
-        st.write("**Duration**")
-
-    for idx, scheduler in enumerate(sorted_schedule):
-        col1, col2, col3, col4 = st.columns([1.5, 2, 1.5, 1.5])
-        with col1:
-            st.write(f"`{scheduler.getTime()}`")
-        with col2:
-            st.write(scheduler.getPetName())
-        with col3:
-            st.write(scheduler.getTaskType())
-        with col4:
-            st.write(f"{scheduler.getTaskDuration()} min")
+    else:
+        # Render the sorted + filtered schedule as a professional table.
+        schedule_rows = []
+        for scheduler in sorted_schedule:
+            task = scheduler.getTask()
+            schedule_rows.append({
+                "Time": f"{scheduler.getTime()}–{scheduler.getEndTime()}",
+                "Pet": scheduler.getPetName(),
+                "Task": scheduler.getTaskType(),
+                "Duration": f"{scheduler.getTaskDuration()} min",
+                "Status": "✅ Completed" if task and task.isTaskCompleted() else "⏳ Pending",
+                # Flag rows that overlap another schedule (#1).
+                "Alert": "⚠️ overlap" if scheduler.getSchedulerID() in conflicting_today else "",
+            })
+        st.table(pd.DataFrame(schedule_rows))
+        st.caption(f"Showing {len(sorted_schedule)} of {len(today_schedule)} scheduled task(s).")
 
     # Show system statistics
     st.divider()

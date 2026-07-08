@@ -224,14 +224,222 @@ Test for daily recurring tasks: completing one spawns the next day's.
 Test for the Scheduler's duplicate/conflicting time flagging.
 Test for duration-aware overlap detection (detectConflicts/hasConflicts).
 
+## output from python -m pytest
+(.venv-1) mait@Ubuntu-dev:~/Documents/codepath/AI/Week4/ai110-module2show-pawpal-starter$ python -m pytest
+======================================================= test session starts ========================================================
+platform linux -- Python 3.13.7, pytest-9.0.3, pluggy-1.6.0
+rootdir: /home/mait/Documents/codepath/AI/Week4/ai110-module2show-pawpal-starter
+plugins: cov-7.1.0, anyio-4.13.0
+collected 49 items                                                                                                                 
+
+tests/test_pawpal.py .................................................                                                       [100%]
+
+======================================================== 49 passed in 0.26s ========================================================
+
+## Confidence Level
+⭐⭐⭐⭐⭐
+
+## ✨ Features
+
+### Sorting & Filtering
+- **Chronological sorting** — `sortSchedulesByTime`, `sortTasksByScheduledTime`
+  Orders schedules by full (year, month, date, start-time). Times are compared as
+  minutes-since-midnight (not string compare), so `09:00` correctly precedes `10:00`.
+  Tasks are keyed on their *earliest* occurrence; unscheduled tasks always sort last.
+- **Multi-criteria filtering** — `filterTasks`, `filterSchedules`
+  Filter by pet, completion status, and/or task type in any combination; a criterion
+  left as `None` is ignored.
+
+### Conflict Detection
+- **Duplicate-time warnings** — `checkScheduleConflict`
+  Non-fatal, exact date+time match. Runs automatically inside `newScheduler`; the
+  schedule is still created, the owner is just advised of the clash.
+- **Duration-aware overlap detection** — `detectConflicts`, `hasConflicts`, `Scheduler.overlaps`
+  Interval-based overlap on the same day (a 60-min 09:00 walk conflicts with a 09:30
+  feed). Buckets by day, sorts, and scans once with early-exit. Adjacent tasks
+  (one ends as the next begins) do **not** conflict.
+- **Per-pet conflict check** — `Pet.findConflictingSchedules`
+  Runs the shared overlap algorithm across all of a pet's schedules.
+
+### Recurrence
+- **Daily recurrence** — `Task.doTask` → `Task._spawnNextOccurrence`
+  Completing a task flagged `isDaily` auto-spawns a fresh instance one day later
+  (same type, duration, priority), re-scheduling each of its times +1 day. A guard
+  prevents a second completion from spawning a duplicate.
+- **Fixed-interval recurrence** — `scheduleRecurring`
+  Creates N occurrences of a task stepping forward every K days (e.g. a daily 09:00
+  walk for a week), correctly rolling over month/year boundaries via date arithmetic.
+- **Recurrence detection & expansion** — `isRecurringTask`, `getRecurringSchedules`
+  Flags tasks with >1 occurrence and returns their occurrences in chronological order.
+
+### Planning
+- **Greedy day planner** — `buildDayPlan`, `Owner.planDay`
+  Orders pending tasks by priority (high→low), then duration (short→long), and packs
+  them back-to-back from the day's start; tasks that don't fit the window are returned
+  as `unplaced`.
+- **Free-slot finder** — `getFreeSlots`, `findFreeSlot`
+  Merges busy intervals and returns the open gaps, or the earliest start time that
+  fits a given duration.
+- **Daily load / overbooking** — `getDailyLoad`, `isDateOverbooked`
+  Totals scheduled minutes for a date and flags it against a care-time budget
+  (default 480 min).
+
+### Data Model & Integrity
+- **Priority model** — `DEFAULT_TASK_PRIORITY`
+  Sensible defaults per task type (Vet > Feed > Walk > Nap), overridable 0–3.
+- **O(1) lookups** — id/name indexes behind `getOwnerByID`, `getPetByName`, etc.,
+  with a linear-scan fallback so a stale index can never return a wrong answer.
+- **Cascading cleanup** — `removeOwner`, `removePet`
+  Removing an owner/pet cascades to its pets, tasks, and schedulers (no orphans).
+
 ## 📸 Demo Walkthrough
+
+- The main UI features and what actions a user can perform
+  Owner Management allows you to add owner and view all known owners
+  Pet Management allows you to add a pet, set it's owner, and view all known pets
+  Scheduling Tasks lets you configure a task for a particular pet.
+
+- An example workflow
+  Create a new owner
+  Create a new pet and assign owner
+  Schedule a task and link to pet
+  View pet's tasks and today's schedule
+
+- Sorting Scheduler behavior
+  Create a new owner
+  Create a new pet and assign owner
+  Schedule a task and link to pet
+  Schedule another task before 1st task
+  View pet's tasks should sort by date and time
+
+- Scheduler conflict warnings behavior
+  Create a new owner
+  Create a new pet and assign owner
+  Schedule a task and link to pet
+  Schedule another task before 1st task
+  Schedule 3rd task with same time as 2nd task
+  View pet's tasks should show a conflict alert with emoji for the columns involved
+
+- CLI terminal output from running main.py
+(.venv-1) mait@Ubuntu-dev:~/Documents/codepath/AI$ /home/mait/Documents/codepath/AI/.venv-1/bin/python /home/mait/Documents/codepath/AI/Week4/ai110-module2show-pawpal-starter/main.py
+======================================================================
+PawPal+ Pet Care System - Example Usage
+======================================================================
+
+[1] Creating Owner...
+    ✓ Owner created: John Smith (ID: 1)
+
+[2] Creating first Pet...
+    ✓ Pet created: Fluffy (ID: 1)
+      Owner: John Smith
+
+[3] Creating second Pet...
+    ✓ Pet created: Buddy (ID: 2)
+      Owner: John Smith
+
+[4] John Smith's Pets Summary:
+    Total pets owned: 2
+      • Fluffy (ID: 1)
+      • Buddy (ID: 2)
+
+[5] Creating Tasks for Fluffy...
+    ✓ Task 1: Walk (30 min) - Today at 09:00
+    ✓ Task 2: Feed (15 min) - Today at 12:30
+    ✓ Task 3: Nap Time (60 min) - Tomorrow at 14:00
+
+[6] Creating Tasks for Buddy...
+    ✓ Task 1: Feed (15 min) - Today at 08:00
+    ✓ Task 2: Walk (45 min) - Today at 16:00
+    ✓ Task 3: Vet Visit (30 min) - Day after tomorrow at 10:00
+
+[7] System Statistics:
+    Total Owners: 1
+    Total Pets: 2
+    Total Tasks: 0
+    Average pets per owner: 2
+
+[8] Pet Statistics:
+    Total Pets in system: 2
+    Total Tasks: 0
+    Pets with pending tasks: 0
+    Pets with no tasks: 2
+
+======================================================================
+TODAY'S SCHEDULE
+======================================================================
+
+Date: 2026-07-08
+Total activities scheduled: 4
+
+  1. [08:00] Buddy - Feed Pet (15 min)
+  2. [09:00] Fluffy - Walk Pet (30 min)
+  3. [12:30] Fluffy - Feed Pet (15 min)
+  4. [16:00] Buddy - Walk Pet (45 min)
+
+======================================================================
+SORT SCHEDULER BY TIME
+======================================================================
+
+Created 5 tasks for Ziggy on 2026-07-08 (out of order):
+  • [15:45] Walk Pet (30 min)
+  • [07:15] Feed Pet (15 min)
+  • [20:00] Nap Time (60 min)
+  • [06:30] Veterinarian Visit (45 min)
+  • [11:00] Feed Pet (15 min)
+
+After sortSchedulesByTime() (chronological):
+  1. [06:30] Veterinarian Visit (45 min)
+  2. [07:15] Feed Pet (15 min)
+  3. [11:00] Feed Pet (15 min)
+  4. [15:45] Walk Pet (30 min)
+  5. [20:00] Nap Time (60 min)
+
+======================================================================
+SORTING AND FILTERING
+======================================================================
+
+[A] All scheduled tasks for 'Fluffy':
+    Found 3 scheduled task(s).
+      • 2026-07-08 [09:00] Walk Pet (30 min)
+      • 2026-07-08 [12:30] Feed Pet (15 min)
+      • 2026-07-09 [14:00] Nap Time (60 min)
+
+[B] 'Fluffy' schedule sorted by time (sortSchedulesByTime):
+    1. 2026-07-08 [09:00] Walk Pet (30 min)
+    2. 2026-07-08 [12:30] Feed Pet (15 min)
+    3. 2026-07-09 [14:00] Nap Time (60 min)
+
+======================================================================
+CONFLICT DETECTION
+======================================================================
+
+Scheduling two tasks at 2026-07-08 18:30 ...
+  → Booking Fluffy's Feed:
+  → Booking Buddy's Walk (same slot):
+⚠️ Schedule conflict at 2026-07-08 18:30: slot already booked for Fluffy (Feed Pet).
+
+Direct checkScheduleConflict() call for that slot:
+  ⚠️ Schedule conflict at 2026-07-08 18:30: slot already booked for Fluffy (Feed Pet), Buddy (Walk Pet).
+  Free slot (23:15) -> no conflict (as expected)
+
+[9] Scheduler Statistics:
+    Total Schedulers: 13
+    Total Dates Scheduled: 3
+    Today's Activities: 11
+    Pending Activities: 13
+    Total Duration: 405 minutes
+
+======================================================================
+Example completed successfully!
+======================================================================
+(.venv-1) mait@Ubuntu-de
 
 Describe your app in numbered steps so a reader can follow along without watching a video:
 
-1. <!-- Describe this step -->
-2. <!-- Describe this step -->
-3. <!-- Describe this step -->
-4. <!-- Describe this step -->
-5. <!-- Add more steps as needed -->
+1. Create a new owner
+2. Create a new pet and assign owner
+3. Schedule a task and link to pet
+4. View pet's tasks and today's schedule
+
 
 **Screenshot or video** *(optional)*: <!-- Insert a screenshot or link to a demo video here -->

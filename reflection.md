@@ -74,12 +74,18 @@ Three core functions to provide are
 **a. How you used AI**
 
 - How did you use AI tools during this project (for example: design brainstorming, debugging, refactoring)?
+  Mostly used code generation and debugging prompts
+
 - What kinds of prompts or questions were most helpful?
+  Most helpful prompts were detailed variations of tasks from the Show Project tab. Copied the hints and changed the context to produce a detailed prompt.
 
 **b. Judgment and verification**
 
 - Describe one moment where you did not accept an AI suggestion as-is.
+  Some of the suggested labels were not descriptive or wront context.
+
 - How did you evaluate or verify what the AI suggested?
+  Studied code to see what was being done and what data was shown.
 
 ---
 
@@ -88,12 +94,18 @@ Three core functions to provide are
 **a. What you tested**
 
 - What behaviors did you test?
+  Conflicted tasks, sorting, and filtering
+
 - Why were these tests important?
+  Presentation neede to be precise and clear. Can't have bugs that crash the app.
 
 **b. Confidence**
 
 - How confident are you that your scheduler works correctly?
+  Very confident.
+
 - What edge cases would you test next if you had more time?
+  Assign date according to actual dates available for month.
 
 ---
 
@@ -102,11 +114,14 @@ Three core functions to provide are
 **a. What went well**
 
 - What part of this project are you most satisfied with?
+  The algorithms for conflict management and sorting.
 
 **b. What you would improve**
 
 - If you had another iteration, what would you improve or redesign?
+  The GUI needs to be refined so it optimizes screen used.
 
 **c. Key takeaway**
 
 - What is one important thing you learned about designing systems or working with AI on this project?
+  Detailed prompts are better than vague ones. But sometimes it is hard to describe what I wanted. Some prompts took multiple iterations.

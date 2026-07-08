@@ -1,0 +1,136 @@
+classDiagram
+    %% Final PawPal+ model. Reflects the implemented classes in pawpal_system.py,
+    %% the bidirectional relationships, and the module-level scheduling layer the UI uses.
+
+    class Owner {
+        -ownerID: int
+        -ownerName: string
+        -petList: List~Pet~
+        +Owner(ownerName: string)
+        +getOwnerID(): int
+        +getOwnerName(): string
+        +setOwnerName(name: string): void
+        +addPet(pet: Pet): bool
+        +removePet(pet: Pet): bool
+        +getPetByName(name: string): Pet
+        +getPetByID(pet_id: int): Pet
+        +getPetList(): List~Pet~
+        +getAllPendingTasks(): List~Task~
+        +getAllSchedules(): List~Scheduler~
+        +getSchedulesByDate(y, m, d): List~Scheduler~
+        +getDailyLoad(y, m, d): int
+        +isDayOverbooked(y, m, d, budget): bool
+        +planDay(day_start, day_end): dict
+        +getOverallCompletionRate(): float
+    }
+
+    class Pet {
+        -petID: int
+        -petName: string
+        -owner: Owner
+        -petTaskList: List~Task~
+        +Pet(petName: string, owner: Owner)
+        +getOwner(): Owner
+        +getPetID(): int
+        +getPetName(): string
+        +setPetName(name: string): void
+        +addPetTask(task: Task): bool
+        +removePetTask(task: Task): bool
+        +getPetTaskList(): List~Task~
+        +getPendingTasks(): List~Task~
+        +getCompletedTasks(): List~Task~
+        +getTasksByType(task_code: int): List~Task~
+        +getSchedulersByPet(): List~Scheduler~
+        +getSchedulersByDate(y, m, d): List~Scheduler~
+        +findConflictingSchedules(): List~tuple~
+        +getTaskCompletionRate(): float
+        +markAllPendingAsCompleted(): int
+    }
+
+    class Task {
+        -taskID: int
+        -pet: Pet
+        -taskCode: int
+        -duration: int
+        -priority: int
+        -isDaily: bool
+        -completed: bool
+        -completed_at: datetime
+        -schedulerList: List~Scheduler~
+        +Task(pet: Pet, taskCode: int, duration, priority, isDaily)
+        +getTaskID(): int
+        +getPet(): Pet
+        +getTaskCode(): int
+        +getPriority(): int
+        +setPriority(priority: int): void
+        +isDailyTask(): bool
+        +setDaily(is_daily: bool): void
+        +isTaskCompleted(): bool
+        +setTaskDuration(duration: int): void
+        +getTaskDuration(): int
+        +doTask(): Optional~Task~
+        +getTaskDescription(): string
+        +addScheduler(s: Scheduler): void
+        +removeScheduler(s: Scheduler): void
+        +getSchedulerList(): List~Scheduler~
+        +getScheduleCount(): int
+        +resetCompletion(): void
+        -_spawnNextOccurrence(): Task
+    }
+
+    class Scheduler {
+        -schedulerID: int
+        -task: Task
+        -year: int
+        -month: int
+        -date: int
+        -time: string
+        +Scheduler(task: Task, year, month, date, time)
+        +getSchedulerID(): int
+        +getYear() / setYear(year: int)
+        +getMonth() / setMonth(month: int)
+        +getDate() / setDate(date: int)
+        +getTime() / setTime(time: string)
+        +getTask(): Task
+        +getPet(): Pet
+        +getPetName(): string
+        +getTaskType(): string
+        +getTaskDuration(): int
+        +getStartMinutes(): int
+        +getEndMinutes(): int
+        +getEndTime(): string
+        +isSameDate(other: Scheduler): bool
+        +overlaps(other: Scheduler): bool
+        +isScheduleInPast(): bool
+        +isScheduleToday(): bool
+        +isScheduleUpcoming(): bool
+        +getFullDateTime(): string
+        +getKey(): string
+    }
+
+    class SchedulingModule {
+        <<module>>
+        +ownerList: List~Owner~
+        +petList: List~Pet~
+        +schedulerDictionary: dict
+        +newOwner(name) / newPet(name, owner) / newScheduler(task, y, m, d, time)
+        +sortSchedulesByTime(schedulers, descending): List~Scheduler~
+        +sortTasksByScheduledTime(tasks, descending): List~Task~
+        +filterTasks(...) / filterSchedules(...)
+        +isRecurringTask(task): bool
+        +getRecurringSchedules(task): List~Scheduler~
+        +scheduleRecurring(task, ..., occurrences, interval): List~Scheduler~
+        +detectConflicts(schedulers): List~tuple~
+        +hasConflicts(schedulers): bool
+        +checkScheduleConflict(y, m, d, time): string
+        +buildDayPlan(tasks, ...): dict
+        +getFreeSlots(...) / findFreeSlot(...)
+        +getDailyLoad(y, m, d) / isDateOverbooked(...)
+    }
+
+    Owner "1" o-- "*" Pet : owns
+    Pet "1" o-- "*" Task : has
+    Task "1" o-- "*" Scheduler : scheduled by
+    Task ..> Task : spawns next (daily)
+    SchedulingModule ..> Task : sorts / filters / plans
+    SchedulingModule ..> Scheduler : sorts / detects conflicts
